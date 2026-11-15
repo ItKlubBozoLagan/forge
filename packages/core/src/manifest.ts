@@ -1,0 +1,416 @@
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+
+import { Language, languageOf } from "./languages";
+
+const Identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*$/, "must be an identifier");
+const GroupName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, "letters, digits, - and _ only");
+const FilePath = z
+    .string()
+    .min(1)
+    .refine((p) => !p.startsWith("/") && !p.split("/").includes(".."), "must be a relative path");
+
+const Bound = z.object({ min: z.number().optional(), max: z.number().optional() }).strict();
+export type Bound = z.infer<typeof Bound>;
+const Constraints = z.record(Identifier, Bound);
+export type Constraints = z.infer<typeof Constraints>;
+
+export const TASK_TYPES = ["batch", "interactive", "output-only", "communication", "grader"] as const;
+export type TaskType = (typeof TASK_TYPES)[number];
+/** Task types the current runner protocol can execute. The rest can be described but not built. */
+export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive"];
+
+const TestSpec = z.union([
+    z.object({ manual: FilePath }).strict(),
+    z
+        .object({
+            gen: Identifier,
+            args: z.string().default(""),
+            count: z.number().int().min(1).max(1000).optional(),
+        })
+        .strict(),
+]);
+
+const Group = z
+    .object({
+        name: GroupName,
+        points: z.number().min(0).default(0),
+        aggregate: z.enum(["min", "sum"]).default("min"),
+        sample: z.boolean().default(false),
+        depends: z.array(GroupName).default([]),
+        constraints: Constraints.default({}),
+        tests: z.array(TestSpec).default([]),
+    })
+    .strict();
+
+export const EXPECTABLE = ["AC", "WA", "TLE", "MLE", "RE", "PA", "FAIL"] as const;
+const Expectation = z.string().refine(
+    (value) => {
+        const parts = value.split("|").map((p) => p.trim());
+        if (parts.length === 0) return false;
+        if (parts.includes("AC") && parts.length > 1) return false;
+        return parts.every((p) => (EXPECTABLE as readonly string[]).includes(p));
+    },
+    { message: `expected AC, or one or more of WA, TLE, MLE, RE, PA, FAIL separated by "|"` },
+);
+
+const Solution = z
+    .object({
+        path: FilePath,
+        role: z.enum(["main"]).optional(),
+        expect: z.union([Expectation, z.record(GroupName, Expectation)]).optional(),
+    })
+    .strict();
+
+export const ManifestSchema = z
+    .object({
+        name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase letters, digits and -"),
+        title: z.union([z.string(), z.record(z.string(), z.string())]).optional(),
+        type: z.enum(TASK_TYPES).default("batch"),
+        limits: z
+            .object({
+                time_ms: z.number().int().min(50).max(60_000),
+                memory_mb: z.number().int().min(16).max(4096),
+            })
+            .strict(),
+        scoring: z
+            .object({ mode: z.enum(["sum", "binary"]).default("sum") })
+            .strict()
+            .default({ mode: "sum" }),
+        constraints: Constraints.default({}),
+        validator: FilePath.optional(),
+        checker: FilePath.optional(),
+        generators: z.record(Identifier, FilePath).default({}),
+        groups: z.array(Group).min(1),
+        solutions: z.array(Solution).default([]),
+        statements: z.record(z.string(), FilePath).optional(),
+    })
+    .strict();
+
+export type Manifest = z.infer<typeof ManifestSchema>;
+export type ManifestGroup = Manifest["groups"][number];
+
+export type Issue = {
+    severity: "error" | "warning";
+    code: string;
+    message: string;
+    /** File path, group, test or solution the issue is about. */
+    ref?: string;
+};
+
+export type PlannedTest = {
+    /** Stable id: `<group>/<index>` with a 1-based index inside its group. */
+    id: string;
+    group: string;
+    index: number;
+    source: { kind: "manual"; path: string } | { kind: "gen"; generator: string; path: string; args: string };
+};
+
+export type PlannedGroup = {
+    name: string;
+    points: number;
+    aggregate: "min" | "sum";
+    sample: boolean;
+    depends: string[];
+    /** Global constraints overridden by the group's own. */
+    constraints: Constraints;
+    /** Ids of the group's own tests. */
+    tests: string[];
+    /** Own tests plus the tests of every (transitive) dependency. */
+    closure: string[];
+};
+
+export type PlannedSolution = {
+    path: string;
+    language: Language;
+    main: boolean;
+    /** Expected outcome per group name. */
+    expect: Record<string, string>;
+};
+
+export type Plan = {
+    manifest: Manifest;
+    runnable: boolean;
+    tests: PlannedTest[];
+    groups: PlannedGroup[];
+    solutions: PlannedSolution[];
+    main?: PlannedSolution;
+    validator?: { path: string; language: Language };
+    checker?: { path: string; language: Language };
+    statements: Record<string, string>;
+};
+
+export const MANIFEST_PATH = "problem.yaml";
+
+export const parseManifest = (
+    text: string,
+): { manifest: Manifest; issues: Issue[] } | { manifest: undefined; issues: Issue[] } => {
+    let raw: unknown;
+    try {
+        raw = parseYaml(text);
+    } catch (error) {
+        return {
+            manifest: undefined,
+            issues: [
+                {
+                    severity: "error",
+                    code: "manifest.yaml",
+                    message: `problem.yaml is not valid YAML: ${(error as Error).message}`,
+                    ref: MANIFEST_PATH,
+                },
+            ],
+        };
+    }
+    const parsed = ManifestSchema.safeParse(raw);
+    if (!parsed.success) {
+        return {
+            manifest: undefined,
+            issues: parsed.error.issues.map((issue) => ({
+                severity: "error" as const,
+                code: "manifest.schema",
+                message: `${issue.path.join(".") || "problem.yaml"}: ${issue.message}`,
+                ref: MANIFEST_PATH,
+            })),
+        };
+    }
+    return { manifest: parsed.data, issues: [] };
+};
+
+const mergeConstraints = (base: Constraints, override: Constraints): Constraints => {
+    const merged: Constraints = {};
+    for (const [name, bound] of Object.entries(base)) merged[name] = { ...bound };
+    for (const [name, bound] of Object.entries(override))
+        merged[name] = { ...merged[name], ...bound };
+    return merged;
+};
+
+/**
+ * Turns a manifest plus the list of files in the package into a concrete build plan and
+ * reports every structural problem (missing files, unknown generators, dependency cycles...).
+ */
+export const planBuild = (manifest: Manifest, files: readonly string[]): { plan: Plan; issues: Issue[] } => {
+    const issues: Issue[] = [];
+    const fileSet = new Set(files);
+    const error = (code: string, message: string, ref?: string) =>
+        issues.push({ severity: "error", code, message, ref });
+    const warning = (code: string, message: string, ref?: string) =>
+        issues.push({ severity: "warning", code, message, ref });
+
+    const program = (path: string, what: string): { path: string; language: Language } | undefined => {
+        if (!fileSet.has(path)) {
+            error("file.missing", `${what} ${path} does not exist`, path);
+            return undefined;
+        }
+        const language = languageOf(path);
+        if (!language) {
+            error("file.language", `${what} ${path} has an unsupported file extension`, path);
+            return undefined;
+        }
+        return { path, language };
+    };
+
+    const runnable = RUNNABLE_TASK_TYPES.includes(manifest.type);
+    if (!runnable)
+        warning(
+            "type.not-runnable",
+            `Task type "${manifest.type}" can be described but not built yet; it needs the next runner protocol`,
+        );
+
+    const validator = manifest.validator ? program(manifest.validator, "Validator") : undefined;
+    if (!manifest.validator)
+        warning("validator.missing", "No validator: nothing proves the tests satisfy the constraints");
+    const checker = manifest.checker ? program(manifest.checker, "Checker") : undefined;
+    if (manifest.type === "interactive" && !manifest.checker)
+        error("checker.missing", "Interactive tasks need a checker (the interactor)");
+
+    const generators: Record<string, { path: string; language: Language }> = {};
+    for (const [name, path] of Object.entries(manifest.generators)) {
+        const resolved = program(path, `Generator "${name}"`);
+        if (resolved) generators[name] = resolved;
+    }
+
+    // groups
+    const groupNames = new Set<string>();
+    for (const group of manifest.groups) {
+        if (groupNames.has(group.name)) error("group.duplicate", `Duplicate group "${group.name}"`, group.name);
+        groupNames.add(group.name);
+    }
+    for (const group of manifest.groups)
+        for (const dependency of group.depends)
+            if (!groupNames.has(dependency))
+                error(
+                    "group.depends",
+                    `Group "${group.name}" depends on unknown group "${dependency}"`,
+                    group.name,
+                );
+
+    const tests: PlannedTest[] = [];
+    const ownTests: Record<string, string[]> = {};
+    for (const group of manifest.groups) {
+        const ids: string[] = [];
+        let index = 0;
+        const add = (source: PlannedTest["source"]) => {
+            index += 1;
+            const id = `${group.name}/${index}`;
+            tests.push({ id, group: group.name, index, source });
+            ids.push(id);
+        };
+        for (const spec of group.tests) {
+            if ("manual" in spec) {
+                if (!fileSet.has(spec.manual))
+                    error("file.missing", `Manual test ${spec.manual} does not exist`, spec.manual);
+                add({ kind: "manual", path: spec.manual });
+                continue;
+            }
+            const generator = generators[spec.gen];
+            if (!generator) {
+                if (!(spec.gen in manifest.generators))
+                    error(
+                        "generator.unknown",
+                        `Group "${group.name}" uses unknown generator "${spec.gen}"`,
+                        group.name,
+                    );
+                continue;
+            }
+            const count = spec.count ?? 1;
+            if (spec.count !== undefined && spec.count > 1 && !spec.args.includes("{i}"))
+                error(
+                    "test.count",
+                    `Group "${group.name}": a test with count > 1 must use {i} in args, otherwise every copy is identical`,
+                    group.name,
+                );
+            for (let copy = 1; copy <= count; copy++)
+                add({
+                    kind: "gen",
+                    generator: spec.gen,
+                    path: generator.path,
+                    args: spec.args.replaceAll("{i}", String(copy)),
+                });
+        }
+        if (ids.length === 0 && group.depends.length === 0)
+            warning("group.empty", `Group "${group.name}" has no tests`, group.name);
+        ownTests[group.name] = ids;
+    }
+
+    // dependency closure, detecting cycles
+    const closures: Record<string, string[]> = {};
+    const visiting = new Set<string>();
+    const byName = new Map(manifest.groups.map((group) => [group.name, group]));
+    const closureOf = (name: string): string[] => {
+        const cached = closures[name];
+        if (cached) return cached;
+        if (visiting.has(name)) {
+            error("group.cycle", `Group dependencies form a cycle through "${name}"`, name);
+            return [];
+        }
+        visiting.add(name);
+        const result = new Set<string>();
+        for (const dependency of byName.get(name)?.depends ?? [])
+            if (byName.has(dependency)) for (const id of closureOf(dependency)) result.add(id);
+        for (const id of ownTests[name] ?? []) result.add(id);
+        visiting.delete(name);
+        return (closures[name] = [...result]);
+    };
+
+    const groups: PlannedGroup[] = manifest.groups.map((group) => ({
+        name: group.name,
+        points: group.points,
+        aggregate: group.aggregate,
+        sample: group.sample,
+        depends: group.depends,
+        constraints: mergeConstraints(manifest.constraints, group.constraints),
+        tests: ownTests[group.name] ?? [],
+        closure: closureOf(group.name),
+    }));
+
+    for (const group of manifest.groups)
+        for (const name of Object.keys(group.constraints))
+            if (!(name in manifest.constraints))
+                warning(
+                    "constraint.undeclared",
+                    `Group "${group.name}" constrains "${name}", which is not declared at the top level`,
+                    group.name,
+                );
+    for (const [name, bound] of Object.entries(manifest.constraints))
+        if (bound.min !== undefined && bound.max !== undefined && bound.min > bound.max)
+            error("constraint.range", `Constraint ${name} has min > max`, name);
+    for (const group of groups)
+        for (const [name, bound] of Object.entries(group.constraints))
+            if (bound.min !== undefined && bound.max !== undefined && bound.min > bound.max)
+                error("constraint.range", `Group "${group.name}": constraint ${name} has min > max`, group.name);
+
+    // solutions
+    const solutions: PlannedSolution[] = [];
+    const seen = new Set<string>();
+    for (const solution of manifest.solutions) {
+        if (seen.has(solution.path)) {
+            error("solution.duplicate", `Solution ${solution.path} is listed twice`, solution.path);
+            continue;
+        }
+        seen.add(solution.path);
+        const resolved = program(solution.path, "Solution");
+        if (!resolved) continue;
+        const main = solution.role === "main";
+        const expect: Record<string, string> = {};
+        if (main && solution.expect !== undefined && solution.expect !== "AC")
+            error("solution.main-expect", "The main solution is always expected to be AC", solution.path);
+        if (main || solution.expect === undefined || typeof solution.expect === "string") {
+            const value = main ? "AC" : ((solution.expect as string | undefined) ?? "AC");
+            for (const group of manifest.groups) expect[group.name] = value;
+        } else {
+            for (const [group, value] of Object.entries(solution.expect)) {
+                if (!groupNames.has(group)) {
+                    error(
+                        "solution.expect-group",
+                        `Solution ${solution.path} has an expectation for unknown group "${group}"`,
+                        solution.path,
+                    );
+                    continue;
+                }
+                expect[group] = value;
+            }
+        }
+        solutions.push({ ...resolved, main, expect });
+    }
+    const mains = solutions.filter((solution) => solution.main);
+    if (mains.length === 0 && manifest.solutions.every((s) => s.role !== "main"))
+        error("solution.no-main", "No solution has role: main; answers cannot be produced");
+    if (mains.length > 1) error("solution.many-main", "More than one solution has role: main");
+    if (!solutions.some((solution) => Object.values(solution.expect).some((value) => value !== "AC")))
+        warning(
+            "solution.no-wrong",
+            "No solution is expected to fail, so nothing measures whether the tests are strong",
+        );
+
+    const statements: Record<string, string> = {};
+    if (manifest.statements) {
+        for (const [language, path] of Object.entries(manifest.statements)) {
+            if (!fileSet.has(path)) error("file.missing", `Statement ${path} does not exist`, path);
+            else statements[language] = path;
+        }
+    } else {
+        for (const path of files) {
+            const match = /^statement\/([A-Za-z-]+)\.md$/.exec(path);
+            if (match?.[1]) statements[match[1]] = path;
+        }
+    }
+    if (Object.keys(statements).length === 0) warning("statement.missing", "The problem has no statement");
+
+    if (manifest.scoring.mode === "sum" && groups.every((group) => group.points === 0))
+        warning("scoring.no-points", "No group awards points");
+
+    return {
+        plan: {
+            manifest,
+            runnable,
+            tests,
+            groups,
+            solutions,
+            main: mains.length === 1 ? mains[0] : undefined,
+            validator,
+            checker,
+            statements,
+        },
+        issues,
+    };
+};
