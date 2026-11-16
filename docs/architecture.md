@@ -99,6 +99,19 @@ one, so re-measuring steadies a borderline verdict.
 - When an interactor exits early the solution is left blocked until the wall-clock limit.
 - Jobs have no priority, so prep work on a shared queue waits in line with judging and vice versa.
 
+### Evaluator branch `feat/forge-runner`
+
+Two things the released protocol cannot do are implemented on a local branch of evaluator-v2
+and used when `EVALUATOR_FEATURES` names them:
+
+- `binary-input`: a testcase may carry `input_encoding: "base64"`, and the program receives the
+  decoded bytes.
+- `communication`: a `Communication` evaluation runs the manager and N instances of the
+  program, each in its own sandbox, relaying lines between them (the protocol is in the package
+  format docs). It needs N + 1 sandboxes, so `EVALUATOR_MAX_EVALUATIONS` must be at least 3; an
+  evaluation that can never fit is answered with a system error instead of being dropped, and
+  one that has to wait for sandboxes waits.
+
 ### Planned runner protocol
 
 The build engine already works in terms of hashed blobs, so the adapter is the only thing that

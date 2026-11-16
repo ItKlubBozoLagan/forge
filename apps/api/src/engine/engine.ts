@@ -140,6 +140,17 @@ export class Engine {
     /** Set for a build that ignores every cached step (`clean`). */
     private fresh = false;
 
+    /**
+     * A test as a program reads it. Text travels as text; anything else as base64, which only a
+     * runner with `binaryInput` can deliver (the build refuses such tests otherwise).
+     */
+    private async input(hash: string): Promise<{ stdin: string; stdinBase64?: string }> {
+        const data = await this.ctx.blobs.get(this.ctx.workspaceId, hash);
+        if (!data) throw new Error(`blob ${hash} is missing`);
+        if (isUtf8(data)) return { stdin: data.toString("utf8") };
+        return { stdin: data.toString("utf8"), stdinBase64: data.toString("base64") };
+    }
+
     private exec(request: RunRequest): Promise<RunResult> {
         return this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
             // a cancelled build stops asking for work; jobs already on the runner finish on their own
@@ -246,7 +257,7 @@ export class Engine {
         for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
             const runInputs = [];
             for (const [key, hash] of pending.slice(offset, offset + RUN_SLICE))
-                runInputs.push({ id: key, stdin: await this.ctx.blobs.text(this.ctx.workspaceId, hash) });
+                runInputs.push({ id: key, ...(await this.input(hash)) });
             const result = await this.exec({
                 program: { source, language: validator.language },
                 inputs: runInputs,
@@ -301,7 +312,7 @@ export class Engine {
         for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
             const runInputs = [];
             for (const [key, hash] of pending.slice(offset, offset + RUN_SLICE))
-                runInputs.push({ id: key, stdin: await this.ctx.blobs.text(this.ctx.workspaceId, hash) });
+                runInputs.push({ id: key, ...(await this.input(hash)) });
             const result = await this.execSolution(
                 {
                     program: main,
@@ -343,7 +354,7 @@ export class Engine {
     async runSolution(
         solution: Program,
         checker: Judge | undefined,
-        task: { type: string; time_ms: number; memory_mb: number; manager?: Program },
+        task: { type: string; time_ms: number; memory_mb: number; manager?: Program; simultaneous?: { processes: number } },
         tests: Array<{ id: string; inputHash: string; answerHash: string }>,
         remeasure = false,
     ): Promise<Map<string, RawRun & { key: string }>> {
@@ -351,7 +362,7 @@ export class Engine {
         const checkerId = checker ? sha256(checker.source) : "tokens";
         const limit = measurementLimitMs(task.time_ms);
         const keyOfTest = (test: { inputHash: string; answerHash: string }) =>
-            keyOf("run3", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type, ...(task.manager ? [sha256(task.manager.source)] : []));
+            keyOf("run3", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type, ...(task.manager ? [sha256(task.manager.source)] : []), ...(task.simultaneous ? [`x${task.simultaneous.processes}`] : []));
         const known = remeasure ? new Map<string, RawRun>() : await this.cached<RawRun>(tests.map(keyOfTest));
         const missing = new Map<string, { inputHash: string; answerHash: string }>();
         for (const test of tests) {
@@ -364,10 +375,11 @@ export class Engine {
             const slice = pending.slice(offset, offset + RUN_SLICE);
             const runInputs = [];
             for (const [key, test] of slice) {
-                const input = await this.ctx.blobs.text(this.ctx.workspaceId, test.inputHash);
+                const input = await this.input(test.inputHash);
                 runInputs.push({
                     id: key,
-                    stdin: checker?.framed ? frameInput(input) : input,
+                    ...input,
+                    stdin: checker?.framed ? frameInput(input.stdin) : input.stdin,
                     expected: await this.ctx.blobs.text(this.ctx.workspaceId, test.answerHash),
                 });
             }
@@ -381,6 +393,7 @@ export class Engine {
                     memoryLimitMb: task.memory_mb,
                 },
                 task.manager,
+                task.simultaneous,
             );
             const fresh: Array<Stored<RawRun>> = [];
             if (result.compileError !== undefined) {
@@ -396,7 +409,7 @@ export class Engine {
                 // why each rejected output is wrong, when the checker can say
                 const byId = new Map(runInputs.map((input) => [input.id, input]));
                 const comments =
-                    task.type === "interactive"
+                    task.type === "interactive" || task.simultaneous
                         ? new Map<string, string>()
                         : await this.comments(
                               checker,
@@ -456,8 +469,22 @@ export class Engine {
      * prints the input of the second run, which starts with "2". The second run's output is
      * what gets checked. A manager that exits with an error rejects the first run's output.
      */
-    private async execSolution(request: RunRequest, manager?: Program): Promise<RunResult> {
+    private async execSolution(request: RunRequest, manager?: Program, simultaneous?: { processes: number }): Promise<RunResult> {
         if (!manager) return this.exec(request);
+        // every instance runs at once and talks only through the manager, which gives the verdict
+        if (simultaneous)
+            return this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
+                if (this.ctx.signal?.aborted) throw new Cancelled();
+                return this.ctx.runner.communicate({
+                    program: request.program,
+                    manager,
+                    inputs: request.inputs,
+                    processes: simultaneous.processes,
+                    timeLimitMs: request.timeLimitMs,
+                    memoryLimitMb: request.memoryLimitMb,
+                    signal: this.ctx.signal,
+                });
+            });
         const first = await this.exec({ ...request, checking: "capture", inputs: request.inputs.map((input) => ({ id: input.id, stdin: `1\n${input.stdin}` })) });
         if (first.compileError !== undefined) return first;
         const outcome = new Map<string, RunResult["runs"][number]>();
@@ -772,9 +799,9 @@ export class Engine {
                 // The evaluator takes test data as JSON text. A file that is not UTF-8 would be
                 // altered on the way, so it is refused here instead of judged on other bytes.
                 const data = await this.ctx.blobs.get(this.ctx.workspaceId, entry.hash);
-                if (data && !isUtf8(data)) {
+                if (data && !isUtf8(data) && !this.ctx.runner.capabilities.binaryInput) {
                     test.error = "the file is not UTF-8 text";
-                    error("test.binary", `Test ${planned.id} (${planned.source.path}) is not UTF-8 text; the evaluator can only pass text to a program`, planned.id);
+                    error("test.binary", `Test ${planned.id} (${planned.source.path}) is not UTF-8 text, and this runner can only pass text to a program (the evaluator needs the binary-input feature)`, planned.id);
                     continue;
                 }
                 test.inputHash = entry.hash;
@@ -872,7 +899,15 @@ export class Engine {
             }
         }
         progress("answers", 0, withInput.length);
-        if (plan.manifest.type === "interactive") {
+        if (plan.simultaneous && !this.ctx.runner.capabilities.communication) {
+            error(
+                "communication.unsupported",
+                "This runner cannot run several instances of a solution at once; the evaluator needs the communication feature (EVALUATOR_FEATURES)",
+            );
+            return { ...broken(), tests, groups: plan.groups };
+        }
+        if (plan.manifest.type === "interactive" || plan.simultaneous) {
+            // the interactor or manager is the judge: there is no reference answer to produce
             const empty = await this.ctx.blobs.put(this.ctx.workspaceId, Buffer.alloc(0));
             for (const test of withInput) test.answerHash = empty.hash;
         } else if (plan.main!.outputs) {
@@ -928,7 +963,7 @@ export class Engine {
                     const runs = await this.runSolution(
                         solution.program,
                         checker,
-                        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb, manager },
+                        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb, manager, simultaneous: plan.simultaneous },
                         runnable,
                         options.remeasure,
                     );

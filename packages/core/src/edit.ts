@@ -43,6 +43,7 @@ const TOP_ORDER = [
     "checker",
     "grader",
     "manager",
+    "communication",
     "generators",
     "groups",
     "solutions",
@@ -323,6 +324,16 @@ export const setScoringMode = (text: string, mode: "sum" | "binary") =>
 /** Sets the manager of a communication task, or removes it when `path` is undefined. */
 export const setManager = (text: string, path: string | undefined) =>
     edit(text, (doc, root) => setKey(doc, root, "manager", path, TOP_ORDER));
+
+/**
+ * Chooses how a communication task runs: two runs in turn (`undefined`), or `processes`
+ * instances at the same time.
+ */
+export const setCommunication = (text: string, simultaneous: { processes: number } | undefined) =>
+    edit(text, (doc, root) => {
+        if (!simultaneous) deleteKey(root, "communication");
+        else setNode(doc, root, "communication", doc.createNode({ simultaneous: true, processes: simultaneous.processes }, { flow: true }), TOP_ORDER);
+    });
 
 const GRADER_ORDER = ["c", "cpp", "python", "headers"];
 
@@ -810,6 +821,7 @@ export type ManifestDraft = {
     /** A path, a built-in (`{ builtin, eps? }`) or anything else, kept as it is. */
     checker?: unknown;
     manager?: string;
+    communication?: { simultaneous: boolean; processes: number };
     grader?: { c?: string; cpp?: string; python?: string; headers: string[] };
     generators: Record<string, string>;
     groups: DraftGroup[];
@@ -915,6 +927,9 @@ export const readManifestDraft = (
         validator: str(raw.validator),
         checker: raw.checker ?? undefined,
         manager: str(raw.manager),
+        communication: isRecord(raw.communication)
+            ? { simultaneous: raw.communication.simultaneous === true, processes: num(raw.communication.processes) ?? 2 }
+            : undefined,
         grader: isRecord(raw.grader)
             ? {
                   ...clean({ c: str(raw.grader.c), cpp: str(raw.grader.cpp), python: str(raw.grader.python) }),

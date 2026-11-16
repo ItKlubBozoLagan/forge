@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { App, createApp } from "../src/app";
 import { loadConfig } from "../src/config";
 import { LocalRunner } from "../src/runner/local";
-import { CheckRequest, Runner, RunRequest } from "../src/runner/types";
+import { CheckRequest, CommunicationRequest, Runner, RunRequest } from "../src/runner/types";
 import { createServer } from "../src/server";
 
 const TEST_DATABASE = process.env.TEST_DATABASE_URL ?? "postgresql://kontestis:kontestis@localhost:5432/forge_test";
@@ -13,6 +13,12 @@ const TEST_DATABASE = process.env.TEST_DATABASE_URL ?? "postgresql://kontestis:k
 export class CountingRunner implements Runner {
     readonly pool = "test";
     readonly hardwareClass = "test-box";
+    /** Tests switch these off to see how a runner without the feature is handled. */
+    capabilities = { binaryInput: true, communication: true };
+    communicate(request: CommunicationRequest) {
+        this.calls += 1;
+        return this.inner.communicate(request);
+    }
     calls = 0;
     /** While set, every run waits for it: lets a test act on a build that is certainly running. */
     gate?: Promise<void>;

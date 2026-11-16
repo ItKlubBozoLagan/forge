@@ -40,6 +40,15 @@ export const loadConfig = () => {
             jobTimeoutMs: int("RUNNER_JOB_TIMEOUT_MS", 15 * 60_000),
             /** How evaluation ids are sent: `number` (evaluator master), `string`, or `auto` to probe. */
             idFormat: env("EVALUATOR_ID_FORMAT", "auto") as "auto" | "number" | "string",
+            /**
+             * What the evaluator behind the queue supports beyond the released protocol, comma
+             * separated: `binary-input`, `communication`. An evaluator without a feature ignores
+             * or drops what it does not know, so nothing is assumed.
+             */
+            features: env("EVALUATOR_FEATURES", "")
+                .split(",")
+                .map((feature) => feature.trim())
+                .filter(Boolean),
         },
         auth: {
             /** Password-less login for local development and tests. Never enable in production. */

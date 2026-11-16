@@ -85,9 +85,22 @@ solution's two runs:
    compared with the main solution's (or given to the checker, which receives the second
    run's input as the test).
 
-Each run has the full time limit and the slower one is reported. Two processes of the
-contestant talking to each other at the same time are not supported: the evaluator runs one
-program per evaluation.
+Each run has the full time limit and the slower one is reported.
+
+With `communication: { simultaneous: true, processes: 2 }` the instances run at the same time
+instead, each in its own sandbox, and talk only through the manager:
+
+- the manager reads the length of the test in bytes and a newline, then the test and a newline;
+- from then on it reads one line `K:<text>` for every line instance K prints (instances are
+  numbered from 1), and `K!` when instance K closes its output;
+- every line `K:<text>` it prints is delivered to instance K as `<text>`; `K!` closes that
+  instance's input;
+- it writes its verdict (`AC`, `WA` or `custom:partial:<score>`) to `interactor_meta.out`, like
+  an interactor. There are no reference answers and no checker.
+
+Each instance has the full time and memory limit; the largest is reported. This needs an
+evaluator with the `communication` feature (`EVALUATOR_FEATURES`), which the released
+evaluator does not have; without it the build says so.
 
 kontestis judges neither of these two types today; `judge: kontestis` says so in the build.
 
@@ -182,6 +195,11 @@ tests:
   - { manual: tests/tricky.in, answer: tests/tricky.ans, desc: "all numbers equal" }
   - { gen: rand, args: "n=1000 seed={i}", count: 3, desc: "random, small" }
 ```
+
+A test does not have to be text. A file that is not UTF-8 is delivered byte for byte when the
+evaluator has the `binary-input` feature (`EVALUATOR_FEATURES`); otherwise the build refuses it
+(`test.binary`), because the released evaluator can only pass text. Generated tests are always
+text.
 
 `answer` names a hand-written answer file for a manual test; without it the main solution
 produces the answer. `desc` is a note shown next to the test in builds. A build's inputs and

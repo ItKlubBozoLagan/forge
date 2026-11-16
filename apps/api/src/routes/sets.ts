@@ -186,6 +186,7 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 const name = `manager.${plan.manager.path.split(".").pop()}`;
                 files[`${base}${name}`] = strToU8(managerProgram.source);
                 extras.manager = { path: name, language: managerProgram.language };
+                extras.communication = plan.simultaneous ? { simultaneous: true, processes: plan.simultaneous.processes } : { simultaneous: false };
             }
             // kontestis stores a reference solution with every problem
             let solution = null;

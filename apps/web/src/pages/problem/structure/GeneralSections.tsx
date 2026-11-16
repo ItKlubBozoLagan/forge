@@ -16,6 +16,7 @@ import {
     setScoringMode,
     setTitle,
     setType,
+    setCommunication,
     setGrader,
     setGraderHeaders,
     setManager,
@@ -262,6 +263,29 @@ export const GeneralSection = ({ draft, apply, readOnly, programs }: SectionProp
                                 disabled={readOnly}
                                 onChange={(path) => apply((text) => setManager(text, path))}
                             />
+                        )}
+                    </Field>
+                )}
+                {type === "communication" && (
+                    <Field
+                        label="How the solution runs"
+                        hint="At the same time needs an evaluator with the communication feature."
+                    >
+                        {(id) => (
+                            <Select
+                                id={id}
+                                value={draft.communication?.simultaneous ? String(draft.communication.processes) : ""}
+                                disabled={readOnly}
+                                onChange={(event) => {
+                                    const value = event.target.value;
+                                    apply((text) => setCommunication(text, value ? { processes: Number(value) } : undefined));
+                                }}
+                            >
+                                <option value="">Twice, one run after the other</option>
+                                <option value="2">2 instances at the same time</option>
+                                <option value="3">3 instances at the same time</option>
+                                <option value="4">4 instances at the same time</option>
+                            </Select>
                         )}
                     </Field>
                 )}

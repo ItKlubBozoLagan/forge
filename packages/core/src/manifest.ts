@@ -122,6 +122,17 @@ export const ManifestSchema = z
          * first run's output into the second run's input.
          */
         manager: FilePath.optional(),
+        /**
+         * `type: communication` only. `simultaneous: true` runs `processes` instances of the
+         * solution at once, talking only through the manager, instead of two runs in turn.
+         */
+        communication: z
+            .object({
+                simultaneous: z.boolean().default(false),
+                processes: z.number().int().min(1).max(4).default(2),
+            })
+            .strict()
+            .optional(),
         /** Judge the problem is meant for; turns on warnings about what that judge cannot score. */
         judge: z.enum(["kontestis"]).optional(),
         generators: z.record(Identifier, FilePath).default({}),
@@ -196,6 +207,8 @@ export type Plan = {
     grader?: { files: Partial<Record<Language, string>>; headers: string[] };
     /** `type: communication`: the program run between a solution's two runs. */
     manager?: { path: string; language: Language };
+    /** Set when the instances of a communication task run at the same time. */
+    simultaneous?: { processes: number };
     statements: Record<string, string>;
 };
 
@@ -309,6 +322,10 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     if (manifest.type === "communication") {
         if (!manifest.manager) error("manager.missing", "A communication task needs a manager: the program run between the solution's two runs");
         else manager = program(manifest.manager, "Manager");
+        if (manifest.communication?.simultaneous && manifest.checker !== undefined)
+            warning("checker.unused", "With simultaneous communication the manager decides the verdict; the checker is not used");
+    } else if (manifest.communication) {
+        warning("communication.unused", `communication is only used by type: communication, not by "${manifest.type}"`);
     } else if (manifest.manager) warning("manager.unused", `manager is only used by type: communication, not by "${manifest.type}"`);
 
     const generators: Record<string, { path: string; language: Language }> = {};
@@ -570,6 +587,10 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
             builtinChecker,
             grader,
             manager,
+            simultaneous:
+                manifest.type === "communication" && manifest.communication?.simultaneous
+                    ? { processes: manifest.communication.processes }
+                    : undefined,
             statements,
         },
         issues,

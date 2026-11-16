@@ -649,15 +649,135 @@ int main(int argc, char* argv[]) {
         expect(JSON.parse(Buffer.from(files["A/problem.json"]!).toString()).inputFraming).toBe("length-prefixed");
     }, 180_000);
 
-    it("refuses a test that is not text instead of judging altered bytes", async () => {
+    it("refuses a test that is not text when the runner cannot deliver bytes", async () => {
         const id = await createProblem(ana, "binary-test");
         await ana.put(`/problems/${id}/file?path=${encodeURIComponent("tests/sample1.in")}`, Buffer.from([0x35, 0x20, 0xff, 0xfe, 0x0a]));
-        const result = await build(ana, id);
-        expect(result.result).toBe("red");
-        const issue = result.output.report.issues.find((entry: any) => entry.code === "test.binary");
-        expect(issue.ref).toBe("samples/1");
-        expect(result.output.matrix["solutions/main.cpp"]["samples/1"]).toBeUndefined();
+        harness.runner.capabilities.binaryInput = false;
+        try {
+            const result = await build(ana, id);
+            expect(result.result).toBe("red");
+            const issue = result.output.report.issues.find((entry: any) => entry.code === "test.binary");
+            expect(issue.ref).toBe("samples/1");
+            expect(result.output.matrix["solutions/main.cpp"]["samples/1"]).toBeUndefined();
+        } finally {
+            harness.runner.capabilities.binaryInput = true;
+        }
     });
+
+    it("delivers a binary test byte for byte when the runner can", async () => {
+        const id = await createProblem(ana, "binary-ok", "empty");
+        // bytes that are not valid UTF-8, including a zero byte
+        await ana.put(`/problems/${id}/file?path=${encodeURIComponent("tests/raw.in")}`, Buffer.from([0xff, 0x00, 0xfe, 0x80, 0x41]));
+        await writeFile(ana, id, "tests/text.in", "AB");
+        await writeFile(ana, id, "solutions/sum.py", "import sys\ndata = sys.stdin.buffer.read()\nprint(len(data), sum(data))\n");
+        await writeFile(ana, id, "solutions/text.py", "import sys\ndata = sys.stdin.buffer.read().decode('utf-8', 'replace').encode()\nprint(len(data), sum(data))\n");
+        await writeFile(ana, id, "problem.yaml", `name: binary-ok
+limits: { time_ms: 2000, memory_mb: 256 }
+groups:
+  - name: text
+    points: 40
+    tests: [{ manual: tests/text.in }]
+  - name: raw
+    points: 60
+    tests: [{ manual: tests/raw.in }]
+solutions:
+  - { path: solutions/sum.py, role: main }
+  - { path: solutions/text.py, expect: { text: AC, raw: WA } }
+`);
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        const raw = result.output.tests.find((test: any) => test.id === "raw/1");
+        // 5 bytes summing to 0xff + 0 + 0xfe + 0x80 + 0x41
+        expect((await ana.get(`/problems/${id}/blobs/${raw.answerHash}`)).raw.toString().trim()).toBe("5 702");
+    });
+
+    it("runs the instances of a communication task at the same time", async () => {
+        const id = await createProblem(ana, "talk", "empty");
+        await writeFile(ana, id, "manager.py", `import sys
+raw = sys.stdin.buffer
+length = int(raw.readline())
+n = int(raw.read(length))
+raw.readline()
+
+def send(instance, text):
+    sys.stdout.write(f"{instance}:{text}\\n")
+    sys.stdout.flush()
+
+def finish(verdict):
+    with open("interactor_meta.out", "w") as meta:
+        meta.write(verdict)
+    sys.exit(0)
+
+def receive(instance):
+    while True:
+        line = raw.readline().decode().rstrip("\\n")
+        if line == "" or line.startswith(f"{instance}!"):
+            finish("WA")
+        if line.startswith(f"{instance}:"):
+            return line[len(str(instance)) + 1:]
+
+# instance 1 learns the number and may pass one small message on; instance 2 must double it
+send(1, f"A {n}")
+send(2, "B")
+message = receive(1)
+if not message.isdigit() or int(message) > MESSAGE_MAX:
+    finish("WA")
+send(2, message)
+finish("AC" if receive(2).strip() == str(2 * n) else "WA")
+`);
+        await writeFile(ana, id, "solutions/good.py", `role = input().split()
+if role[0] == "A":
+    print(role[1], flush=True)
+else:
+    print(int(input()) * 2, flush=True)
+`);
+        await writeFile(ana, id, "solutions/wrong.py", `role = input().split()
+if role[0] == "A":
+    print(role[1], flush=True)
+else:
+    print(int(input()) + 2, flush=True)
+`);
+        await writeFile(ana, id, "tests/two.in", "2\n");
+        await writeFile(ana, id, "tests/many.in", "21\n");
+        const manifest = `name: talk
+type: communication
+communication: { simultaneous: true, processes: 2 }
+limits: { time_ms: 2000, memory_mb: 256 }
+constraints: { MESSAGE: { max: 1000 } }
+manager: manager.py
+groups:
+  - name: small
+    points: 30
+    tests: [{ manual: tests/two.in }]
+  - name: large
+    points: 70
+    tests: [{ manual: tests/many.in }]
+solutions:
+  - { path: solutions/good.py, role: main }
+  # 2 + 2 is also 2 * 2
+  - { path: solutions/wrong.py, expect: { small: AC, large: WA } }
+`;
+        await writeFile(ana, id, "problem.yaml", manifest);
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.report.solutions.map((solution: any) => [solution.path, solution.score])).toEqual([
+            ["solutions/good.py", 100],
+            ["solutions/wrong.py", 30],
+        ]);
+
+        // a runner without the feature says so instead of hanging
+        harness.runner.capabilities.communication = false;
+        try {
+            await writeFile(ana, id, "problem.yaml", `${manifest}# again\n`);
+            const refused = await build(ana, id);
+            expect(refused.result).toBe("red");
+            expect(refused.output.report.issues.map((issue: any) => issue.code)).toContain("communication.unsupported");
+        } finally {
+            harness.runner.capabilities.communication = true;
+        }
+    }, 60_000);
 
     it("says why an output was rejected", async () => {
         // the judge's default comparison: Forge compares the texts itself

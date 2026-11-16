@@ -4,11 +4,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CheckRequest, Program, Runner, RunOutcome, RunRequest, RunResult } from "./types";
+import { createInterface } from "node:readline";
+
+import { CheckRequest, CommunicationRequest, Program, Runner, RunInput, RunOutcome, RunRequest, RunResult } from "./types";
 
 type Executed = { code: number | null; stdout: string; stderr: string; timeMs: number; timedOut: boolean };
 
-const execute = (command: string, args: string[], stdin: string, timeoutMs: number, cwd?: string): Promise<Executed> =>
+/** What a program reads: the text, or the bytes of an input that is not text. */
+const bytesOf = (input: RunInput): string | Buffer => (input.stdinBase64 !== undefined ? Buffer.from(input.stdinBase64, "base64") : input.stdin);
+
+const execute = (command: string, args: string[], stdin: string | Buffer, timeoutMs: number, cwd?: string): Promise<Executed> =>
     new Promise((resolve) => {
         const started = process.hrtime.bigint();
         const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -108,6 +113,71 @@ const interact = async (
     };
 };
 
+/**
+ * Mirrors the evaluator's communication evaluation: the manager reads the length of the test,
+ * the test, and then `K:<line>` for every line instance K prints (`K!` when it closes its
+ * output); every `K:<text>` the manager prints goes to instance K, `K!` closes its input. The
+ * verdict is the content of `interactor_meta.out`.
+ */
+const communicate = async (
+    solution: { command: string; args: string[] },
+    manager: { command: string; args: string[] },
+    directory: string,
+    stdin: string | Buffer,
+    processes: number,
+    timeoutMs: number,
+): Promise<Interaction> => {
+    await mkdir(directory, { recursive: true });
+    const started = process.hrtime.bigint();
+    const judge = spawn(manager.command, manager.args, { cwd: directory, stdio: ["pipe", "pipe", "ignore"] });
+    const instances = Array.from({ length: processes }, () => spawn(solution.command, solution.args, { stdio: ["pipe", "pipe", "pipe"] }));
+    const err: Buffer[] = [];
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        judge.kill("SIGKILL");
+        for (const instance of instances) instance.kill("SIGKILL");
+    }, timeoutMs * 2);
+    judge.stdin.on("error", () => {});
+    judge.on("error", () => {});
+    const data = typeof stdin === "string" ? Buffer.from(stdin, "utf8") : stdin;
+    judge.stdin.write(Buffer.concat([Buffer.from(`${data.length}\n`), data, Buffer.from("\n")]));
+    instances.forEach((instance, index) => {
+        instance.stdin.on("error", () => {});
+        instance.on("error", () => {});
+        instance.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+        const lines = createInterface({ input: instance.stdout });
+        lines.on("line", (line) => judge.stdin.write(`${index + 1}:${line}\n`));
+        lines.on("close", () => judge.stdin.write(`${index + 1}!\n`));
+    });
+    const routed = createInterface({ input: judge.stdout });
+    routed.on("line", (line) => {
+        const match = /^(\d+)([:!])(.*)$/.exec(line);
+        const target = match ? instances[Number(match[1]) - 1] : undefined;
+        if (!match || !target) return;
+        if (match[2] === "!") target.stdin.end();
+        else target.stdin.write(`${match[3]}\n`);
+    });
+    routed.on("close", () => {
+        for (const instance of instances) instance.stdin.end();
+    });
+    const closed = (child: { on(event: "close", listener: (code: number | null) => void): unknown }) =>
+        new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+    const codes = await Promise.all([...instances.map(closed), closed(judge)]);
+    clearTimeout(timer);
+    const verdict = await readFile(join(directory, "interactor_meta.out"), "utf8").then(
+        (text) => text.trim(),
+        () => undefined,
+    );
+    return {
+        code: codes.slice(0, processes).find((code) => code !== 0) ?? 0,
+        stderr: Buffer.concat(err).toString("utf8"),
+        timeMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        timedOut,
+        verdict,
+    };
+};
+
 /** Maps what a checker or interactor reported to a run status. */
 const verdictOf = (text: string): Pick<RunOutcome, "status" | "data" | "message"> => {
     if (text.startsWith("custom:")) return { status: "custom", data: text.slice("custom:".length) };
@@ -140,6 +210,31 @@ const tokens = (text: string) =>
 export class LocalRunner implements Runner {
     readonly pool = "local";
     readonly hardwareClass = "local";
+    readonly capabilities = { binaryInput: true, communication: true };
+
+    async communicate(request: CommunicationRequest): Promise<RunResult> {
+        const directory = await mkdtemp(join(tmpdir(), "forge-talk-"));
+        try {
+            const program = await compile(directory, "program", request.program);
+            if ("error" in program) return { compileError: program.error, runs: [] };
+            const manager = await compile(directory, "manager", request.manager);
+            if ("error" in manager) return { compileError: manager.error, runs: [] };
+            const runs: RunOutcome[] = [];
+            for (const input of request.inputs) {
+                const result = await communicate(program, manager, join(directory, `talk-${runs.length}`), bytesOf(input), request.processes, request.timeLimitMs);
+                const base = { id: input.id, timeMs: result.timeMs, memoryKb: 0 };
+                const rejected = result.verdict !== undefined && verdictOf(result.verdict).status !== "accepted";
+                if (rejected) runs.push({ ...base, ...verdictOf(result.verdict!) });
+                else if (result.timedOut) runs.push({ ...base, status: "time_limit_exceeded" });
+                else if (result.code !== 0) runs.push({ ...base, status: "runtime_error", message: result.stderr.slice(0, 2000) });
+                else if (result.verdict === undefined) runs.push({ ...base, status: "judge_error", message: "the manager wrote no verdict" });
+                else runs.push({ ...base, ...verdictOf(result.verdict) });
+            }
+            return { runs };
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
+    }
 
     async run(request: RunRequest): Promise<RunResult> {
         const directory = await mkdtemp(join(tmpdir(), "forge-run-"));
@@ -172,7 +267,7 @@ export class LocalRunner implements Runner {
                     else runs.push({ ...base, ...verdictOf(result.verdict) });
                     continue;
                 }
-                const result = await execute(program.command, program.args, input.stdin, request.timeLimitMs, directory);
+                const result = await execute(program.command, program.args, bytesOf(input), request.timeLimitMs, directory);
                 const base = { id: input.id, timeMs: result.timeMs, memoryKb: 0 };
                 if (result.timedOut) {
                     runs.push({ ...base, status: "time_limit_exceeded" });

@@ -442,3 +442,23 @@ test("builds a communication task, with a manager between the solution's two run
     await page.getByRole("button", { name: "long/1" }).first().click();
     await expect(page.getByRole("dialog")).toContainText("at most 2 integers");
 });
+
+test("builds a communication task whose instances run at the same time", async ({ page }) => {
+    // on a real evaluator this needs one built with the communication feature
+    test.skip(process.env.FORGE_E2E_RUNNER === "evaluator" && !(process.env.EVALUATOR_FEATURES ?? "").includes("communication"), "the evaluator lacks the communication feature");
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Talk Task", "empty");
+    await writeFiles(page, id, {
+        "manager.py": `import sys\nraw = sys.stdin.buffer\nlength = int(raw.readline())\nn = int(raw.read(length))\nraw.readline()\n\ndef send(instance, text):\n    sys.stdout.write(f"{instance}:{text}\\n")\n    sys.stdout.flush()\n\ndef finish(verdict):\n    with open("interactor_meta.out", "w") as meta:\n        meta.write(verdict)\n    sys.exit(0)\n\ndef receive(instance):\n    while True:\n        line = raw.readline().decode().rstrip("\\n")\n        if line == "" or line.startswith(f"{instance}!"):\n            finish("WA")\n        if line.startswith(f"{instance}:"):\n            return line[len(str(instance)) + 1:]\n\nsend(1, f"A {n}")\nsend(2, "B")\nmessage = receive(1)\nsend(2, message)\nfinish("AC" if receive(2).strip() == str(2 * n) else "WA")\n`,
+        "solutions/good.py": `role = input().split()\nif role[0] == "A":\n    print(role[1], flush=True)\nelse:\n    print(int(input()) * 2, flush=True)\n`,
+        "solutions/wrong.py": `role = input().split()\nif role[0] == "A":\n    print(role[1], flush=True)\nelse:\n    print(int(input()) + 2, flush=True)\n`,
+        "tests/two.in": "2\n",
+        "tests/many.in": "21\n",
+        "problem.yaml": `name: talk-task\ntitle: Talk Task\ntype: communication\ncommunication: { simultaneous: true, processes: 2 }\nlimits: { time_ms: 2000, memory_mb: 256 }\nmanager: manager.py\ngroups:\n  - name: small\n    points: 30\n    tests: [{ manual: tests/two.in }]\n  - name: large\n    points: 70\n    tests: [{ manual: tests/many.in }]\nsolutions:\n  - { path: solutions/good.py, role: main }\n  - { path: solutions/wrong.py, expect: { small: AC, large: WA } }\n`,
+    });
+    await page.goto(`/p/${id}/structure`);
+    await expect(page.getByLabel("How the solution runs")).toHaveValue("2");
+    await build(page, "green");
+    await expect(page.getByTestId("cell-solutions/good.py-large/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/wrong.py-large/1")).toContainText("WA");
+});

@@ -266,4 +266,69 @@ while True:
         });
         expect(commented.runs[0]!.stdout).toContain("expected 4, found 9");
     }, 120_000);
+
+    // These need an evaluator built from its feat/forge-runner branch: FORGE_TEST_EVALUATOR_FEATURES=1.
+    it.skipIf(process.env.FORGE_TEST_EVALUATOR_FEATURES !== "1")("delivers binary input and runs instances at the same time", async () => {
+        const bytes = Buffer.from([0xff, 0x00, 0xfe, 0x80, 0x41]);
+        const counted = await runner.run({
+            program: { language: "python", source: "import sys\ndata = sys.stdin.buffer.read()\nprint(len(data), sum(data))" },
+            inputs: [
+                { id: "raw", stdin: "", stdinBase64: bytes.toString("base64") },
+                { id: "text", stdin: "AB" },
+            ],
+            checking: "capture",
+            ...limits,
+        });
+        expect(counted.runs.map((run) => [run.id, run.status, run.stdout?.trim()])).toEqual([
+            ["raw", "accepted", "5 702"],
+            ["text", "accepted", "2 131"],
+        ]);
+
+        const manager = `import sys
+raw = sys.stdin.buffer
+length = int(raw.readline())
+n = int(raw.read(length))
+raw.readline()
+def send(instance, text):
+    sys.stdout.write(f"{instance}:{text}\\n")
+    sys.stdout.flush()
+def finish(verdict):
+    with open("interactor_meta.out", "w") as meta:
+        meta.write(verdict)
+    sys.exit(0)
+def receive(instance):
+    while True:
+        line = raw.readline().decode().rstrip("\\n")
+        if line == "" or line.startswith(f"{instance}!"):
+            finish("WA")
+        if line.startswith(f"{instance}:"):
+            return line[len(str(instance)) + 1:]
+send(1, f"A {n}")
+send(2, "B")
+message = receive(1)
+send(2, message)
+finish("AC" if receive(2).strip() == str(2 * n) else "WA")`;
+        const solution = (extra: number) => `role = input().split()
+if role[0] == "A":
+    print(role[1], flush=True)
+else:
+    print(int(input()) * 2 + ${extra}, flush=True)`;
+        const talk = (extra: number) =>
+            runner.communicate({
+                program: { language: "python", source: solution(extra) },
+                manager: { language: "python", source: manager },
+                inputs: [
+                    { id: "a", stdin: "2\n" },
+                    { id: "b", stdin: "21\n" },
+                ],
+                processes: 2,
+                timeLimitMs: 2000,
+                memoryLimitMb: 256,
+            });
+        expect((await talk(0)).runs.map((run) => [run.id, run.status])).toEqual([
+            ["a", "accepted"],
+            ["b", "accepted"],
+        ]);
+        expect((await talk(1)).runs.map((run) => run.status)).toEqual(["wrong_answer", "wrong_answer"]);
+    }, 120_000);
 });

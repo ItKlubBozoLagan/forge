@@ -124,18 +124,17 @@ control, problem sets and judge bundle export, Polygon import, OAuth sign-in, we
 
 Not done, and why:
 
-- **Simultaneous communication.** Grader tasks and two-phase communication tasks (two runs
-  with a manager in between) build. Two contestant processes talking to each other at the same
-  time do not: the evaluator runs one program per evaluation
-  ([architecture.md](docs/architecture.md#the-runner)). kontestis itself judges neither grader
-  nor communication tasks yet.
+- **Evaluator features not in its released protocol.** Tests that are not UTF-8 text, and
+  communication tasks whose instances run at the same time, need an evaluator built from the
+  local branch `feat/forge-runner` of evaluator-v2 (base64 test input, a `Communication`
+  evaluation type) and `EVALUATOR_FEATURES=binary-input,communication`. That branch is not
+  merged or deployed; against the released evaluator the build refuses both with a clear
+  error. kontestis itself judges neither grader nor communication tasks yet.
 - **Comments from hand-written checkers.** The evaluator returns only a verdict. Forge still
   shows why an output was rejected for the default comparison, built-in checkers and testlib
   checkers (it runs those once more to print their comment); a checker written to Forge's own
   protocol has no channel for a comment.
-- **Binary tests.** The evaluator takes test data as JSON text, so a test that is not UTF-8
-  cannot reach a program unchanged. Forge refuses such a test with a build error
-  (`test.binary`) instead of judging altered bytes. Sets of hundreds of megabytes are untested.
+- **Very large tests.** Sets of hundreds of megabytes are untested.
 - **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Set
   `judge: kontestis` in `problem.yaml` to be warned about what kontestis cannot score today
   (summed groups, group dependencies, fractional points, binary scoring, output-only groups

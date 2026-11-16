@@ -3,7 +3,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
 import { Config } from "../config";
-import { CheckRequest, RunInput, Runner, RunOutcome, RunRequest, RunResult } from "./types";
+import { Capabilities, CheckRequest, CommunicationRequest, RunInput, Runner, RunOutcome, RunRequest, RunResult } from "./types";
 
 type EvaluatorVerdict = { type: string; data?: string | null };
 type EvaluatorResult = {
@@ -32,12 +32,20 @@ const CHECK_CONCURRENCY = 8;
 
 const PROBE_TIMEOUT_MS = 30_000;
 
+const testcaseOf = (input: RunInput) => ({
+    id: input.id,
+    input: input.stdinBase64 ?? input.stdin,
+    output: input.expected ?? "",
+    ...(input.stdinBase64 !== undefined ? { input_encoding: "base64" } : {}),
+});
+
 const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
 
 /** Runs programs on kontestis evaluator instances through their existing Redis protocol. */
 export class EvaluatorRunner implements Runner {
     readonly pool: string;
     readonly hardwareClass: string;
+    readonly capabilities: Capabilities;
     private client;
     private listener;
     private resultQueue = `forge_results:${randomUUID()}`;
@@ -51,6 +59,10 @@ export class EvaluatorRunner implements Runner {
     constructor(private config: Config) {
         this.pool = config.runner.pool;
         this.hardwareClass = config.runner.hardwareClass;
+        this.capabilities = {
+            binaryInput: config.runner.features.includes("binary-input"),
+            communication: config.runner.features.includes("communication"),
+        };
         this.client = createClient({ url: config.redisUrl });
         this.listener = this.client.duplicate();
     }
@@ -92,11 +104,7 @@ export class EvaluatorRunner implements Runner {
             id,
             code: request.program.source,
             language: request.program.language,
-            testcases: inputs.map((input) => ({
-                id: input.id,
-                input: input.stdin,
-                output: input.expected ?? "",
-            })),
+            testcases: inputs.map(testcaseOf),
             time_limit: request.timeLimitMs,
             memory_limit: request.memoryLimitMb * 1024,
             evaluate_all: true,
@@ -210,6 +218,16 @@ export class EvaluatorRunner implements Runner {
                     message: "the runner did not answer in time",
                 })),
             };
+        if (result.verdict.type === "system_error" && result.testcases.length === 0)
+            return {
+                runs: inputs.map((input) => ({
+                    id: input.id,
+                    status: "judge_error" as const,
+                    timeMs: 0,
+                    memoryKb: 0,
+                    message: `the evaluator could not run this: ${result.compiler_output ?? "system error"}`,
+                })),
+            };
         if (result.verdict.type === "compilation_error")
             return {
                 compileError: stripAnsi(result.compiler_output || result.verdict.data || "compilation failed"),
@@ -247,6 +265,48 @@ export class EvaluatorRunner implements Runner {
             }
         });
         return { runs };
+    }
+
+    /** Simultaneous communication: the evaluator runs the manager and every instance at once. */
+    async communicate(request: CommunicationRequest): Promise<RunResult> {
+        const merged: RunResult = { runs: [] };
+        // each test occupies a sandbox per process, so chunks stay small
+        const size = Math.max(1, Math.min(16, Math.floor(MAX_CHUNK_RUN_MS / request.timeLimitMs)));
+        for (let offset = 0; offset < request.inputs.length; offset += size) {
+            if (request.signal?.aborted) throw new Error("The build was cancelled");
+            const inputs = request.inputs.slice(offset, offset + size);
+            const id = await this.evaluationId();
+            const message = {
+                BeginEvaluation: {
+                    output_queue: this.resultQueue,
+                    evaluation: {
+                        Communication: {
+                            id,
+                            code: request.program.source,
+                            language: request.program.language,
+                            testcases: inputs.map(testcaseOf),
+                            time_limit: request.timeLimitMs,
+                            memory_limit: request.memoryLimitMb * 1024,
+                            evaluate_all: true,
+                            checker: { script: request.manager.source, language: request.manager.language },
+                            processes: request.processes,
+                        },
+                    },
+                },
+            };
+            this.inFlight += 1;
+            const timeout = this.config.runner.jobTimeoutMs + 2 * inputs.length * request.timeLimitMs + 60_000;
+            const result = this.interpret(
+                await this.send(id, message, timeout).finally(() => {
+                    this.inFlight -= 1;
+                }),
+                inputs,
+                false,
+            );
+            if (result.compileError !== undefined) return result;
+            merged.runs.push(...result.runs);
+        }
+        return merged;
     }
 
     /** Output-only judging: one evaluation per output, a few in flight at a time. */
