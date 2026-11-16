@@ -42,7 +42,10 @@ export const TestDialog = ({
                             <p className="text-sm text-muted">Not validated (no validator).</p>
                         ) : (
                             <ul className="flex flex-col gap-1 text-sm">
-                                {Object.entries(test.validation).map(([group, message]) => (
+                                {output.groups
+                                    .filter((group) => group.name in test.validation)
+                                    .map((group) => [group.name, test.validation[group.name]] as const)
+                                    .map(([group, message]) => (
                                     <li key={group} className="flex flex-wrap items-start gap-2">
                                         <span className="font-mono text-xs">{group}</span>
                                         {message === null ? (

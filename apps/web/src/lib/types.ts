@@ -119,6 +119,7 @@ export type BuildOutput = {
     type?: string;
     scoring?: string;
     checker?: string;
+    validator?: string;
     runner: { pool: string; hardwareClass: string };
 };
 

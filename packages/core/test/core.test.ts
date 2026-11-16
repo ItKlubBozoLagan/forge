@@ -80,6 +80,35 @@ describe("manifest", () => {
         expect(issues.map((issue) => issue.code)).toContain("type.not-runnable");
     });
 
+    it("accepts a directory of outputs as a solution of an output-only task", () => {
+        const files = templateFiles("output-only", "demo", "Demo");
+        const manifest = parseManifest(files["problem.yaml"]!).manifest!;
+        const { plan: built, issues } = planBuild(manifest, Object.keys(files));
+        expect(built.runnable).toBe(true);
+        expect(issues.filter((issue) => issue.severity === "error")).toEqual([]);
+        const greedy = built.solutions.find((solution) => solution.path === "solutions/greedy")!;
+        expect(greedy.language).toBeUndefined();
+        expect(greedy.outputs).toEqual({
+            "samples/1": "solutions/greedy/samples/1.out",
+            "tests/1": "solutions/greedy/tests/1.out",
+            "tests/2": "solutions/greedy/tests/2.out",
+        });
+        expect(Object.keys(built.solutions.find((solution) => solution.path === "solutions/unfinished")!.outputs!)).toHaveLength(2);
+
+        // a main solution made of outputs must cover every test; stray files are pointed out
+        const asMain = planBuild(
+            parseManifest(files["problem.yaml"]!.replace("{ path: solutions/main.py, role: main }", "{ path: solutions/unfinished, role: main }").replace(/\n  - \{ path: solutions\/unfinished, expect.*\n/, "\n"))
+                .manifest!,
+            [...Object.keys(files), "solutions/unfinished/notes.txt"],
+        ).issues.map((issue) => issue.code);
+        expect(asMain).toContain("solution.main-output");
+        expect(asMain).toContain("solution.stray-output");
+
+        // directories are only solutions in output-only tasks
+        const batch = planBuild(parseManifest(files["problem.yaml"]!.replace("type: output-only", "type: batch")).manifest!, Object.keys(files));
+        expect(batch.issues.map((issue) => issue.code)).toContain("file.missing");
+    });
+
     it("ships templates that plan without errors", () => {
         for (const format of TEMPLATE_FORMATS) {
             const files = templateFiles(format, "demo", "Demo");

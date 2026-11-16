@@ -70,6 +70,8 @@ export const buildReport = (plan: Plan, matrix: Matrix, upstream: Issue[] = []):
     const issues: Issue[] = [...upstream];
     const timeLimitMs = plan.manifest.limits.time_ms;
     const groupByName = new Map(plan.groups.map((group) => [group.name, group]));
+    // contestants of an output-only task submit files, so no time limit applies to them
+    const timed = plan.manifest.type !== "output-only";
 
     const solutions: SolutionReport[] = [];
     const calibration: Calibration = { timeLimitMs };
@@ -120,13 +122,13 @@ export const buildReport = (plan: Plan, matrix: Matrix, upstream: Issue[] = []):
                 });
 
             // time limit calibration uses real measurements of solutions behaving as intended
-            if (expected === "AC" && meets && maxTimeMs > 0) {
+            if (timed && expected === "AC" && meets && maxTimeMs > 0) {
                 if (calibration.slowestAcceptedMs === undefined || maxTimeMs > calibration.slowestAcceptedMs) {
                     calibration.slowestAcceptedMs = maxTimeMs;
                     calibration.slowestAccepted = solution.path;
                 }
             }
-            if (expected !== undefined && expected.split("|").map((p) => p.trim()).includes("TLE") && meets) {
+            if (timed && expected !== undefined && expected.split("|").map((p) => p.trim()).includes("TLE") && meets) {
                 const slow = Math.max(
                     0,
                     // a run killed on wall-clock time (blocked on input, sleeping) reports little

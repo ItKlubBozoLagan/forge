@@ -55,8 +55,28 @@ solutions:
   - { path: solutions/greedy.cpp, expect: WA }                        # same on every group
 ```
 
-`output-only`, `communication` and `grader` tasks can be described but not built yet; they need
-the next runner protocol (see [architecture.md](architecture.md)).
+### Task types
+
+| `type` | What is judged | kontestis `evaluation_variant` |
+|---|---|---|
+| `batch` | A program reads the test on stdin and prints an answer; compared by tokens, or by `checker` | `plain`, `checker` |
+| `interactive` | A program talks to the interactor named in `checker` | `interactive` |
+| `output-only` | Output files the contestant submits; no program of theirs runs | `output-only` |
+| `communication`, `grader` | Can be described but not built: the evaluator runs one single-file program per submission | none |
+
+**Output-only tasks.** A solution is either a program, run like in a batch task to print the
+output of each test, or a directory of outputs with one file per test at
+`<path>/<group>/<index>.out` (the test ids shown in a build, for example
+`solutions/greedy/tests/2.out`). A test with no file is a wrong answer. The main solution may be
+either; when it is a directory it must have an output for every test, and those files are the
+reference answers. `limits` only bound the programs listed as solutions, so the build reports
+no time limit calibration. Files in a solution directory that match no test are reported.
+
+kontestis currently judges an output-only submission as one text against the first test of each
+cluster, so a problem meant for kontestis today should have one test per group.
+
+The `interactive` and `output-only` templates (`forge new --template ...`) are complete
+examples of both.
 
 ### Formats
 
@@ -116,7 +136,9 @@ print("AC" if actual.split() == expected.split() else "WA")
 **Interactor** (`type: interactive`, set as `checker`). Its stdin carries the test, one extra
 newline, then everything the solution prints; what it prints goes to the solution. It writes its
 verdict (`AC`, `WA` or `custom:<score>`) to the file `interactor_meta.out`. See
-[`examples/guess`](../examples/guess).
+[`examples/guess`](../examples/guess). A verdict other than `AC` written by the interactor decides
+the run even when the solution then crashes on its closed input; on the current evaluator such a
+run can instead surface as `TLE`, so expect `"WA|TLE"` from solutions the interactor rejects.
 
 ## Time limits
 

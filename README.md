@@ -106,9 +106,10 @@ control, problem sets and judge bundle export, OAuth sign-in, web UI and CLI.
 
 Not done yet:
 
-- **Runner protocol.** Forge speaks the evaluator's current protocol, which limits it to
-  single-file batch and interactive tasks with inline test data. Communication, grader and
-  output-only tasks can be described but not built. See
+- **Runner protocol.** Forge speaks the evaluator's current protocol, so it builds every task
+  type kontestis judges today: batch (token comparison or a checker), interactive and
+  output-only. Communication and grader tasks can be described but not built; they need
+  multi-process runs and multi-file compilation in the evaluator. See
   [architecture.md](docs/architecture.md#the-runner).
 - **kontestis import.** The judge bundle is exported; kontestis does not import it yet.
 - **Reference hardware.** Builds warn when measured off the reference class but do not block a

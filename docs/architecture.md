@@ -39,6 +39,7 @@ Every step is a function of its inputs and is cached under the hash of those inp
 | validate | validator source (with the group's constraints), language, input hash |
 | answer | main solution source, language, input hash, limits |
 | run | solution source, language, input hash, answer hash, checker, limits, task type |
+| check | submitted output hash, input hash, answer hash, checker (output-only tasks) |
 
 Editing one solution re-runs that solution only. Editing a generator regenerates its tests and
 everything downstream of the tests that actually changed. Runner failures are never cached.
@@ -58,8 +59,9 @@ solution and adds another sample per run.
 ## The runner
 
 `apps/api/src/runner/types.ts` defines the only interface that executes code: run one program on
-a list of inputs, optionally with a checker, and return the status, time, memory and output of
-each run.
+a list of inputs, optionally with a checker or as an interaction with an interactor, and return
+the status, time, memory and output of each run. A second operation, `check`, judges outputs that
+already exist (output-only tasks) without running anything of the contestant's.
 
 | Adapter | Use |
 |---|---|
@@ -74,7 +76,10 @@ waiting workspaces round-robin, so one tenant's stress run cannot starve the oth
 - Test data travels inline in the message, so batches are split and very large tests are slow.
 - Programs are a single file and get no command-line arguments; generators read their arguments
   from stdin.
-- Only batch and interactive tasks; no communication (two-process) or grader-style tasks.
+- Batch, interactive and output-only tasks only: one single-file program per evaluation rules out
+  grader tasks (multi-file compilation) and communication tasks (several contestant processes).
+- An output-only evaluation carries one output and one test, so every submitted file is its own
+  message.
 - Results do not say which instance ran a job, so timing samples are attributed to the
   configured pool, not to a machine.
 - When an interactor exits early the solution is left blocked until the wall-clock limit.
@@ -89,7 +94,7 @@ changes:
    testcase files to object references).
 2. **A generic run step**: program + argv + input blobs → output blobs + resource usage. This
    covers generators, validators, checkers and solutions with one job type.
-3. **Multi-file programs and task types**: graders, communication tasks, output-only.
+3. **Multi-file programs and task types**: graders and communication tasks.
 4. **Instance identity and priority classes** in the protocol: per-machine timing samples, and
    judging that pre-empts prep work on shared instances.
 

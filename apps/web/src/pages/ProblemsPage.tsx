@@ -28,6 +28,14 @@ const TEMPLATE_INFO: Record<TemplateFormat, { label: string; description: string
         label: "HONI",
         description: "Independent clusters, each awarding its points when all its tests pass.",
     },
+    interactive: {
+        label: "Interactive",
+        description: "The solution talks to an interactor program instead of reading a file.",
+    },
+    "output-only": {
+        label: "Output-only",
+        description: "Contestants submit output files; solutions can be programs or outputs.",
+    },
     empty: {
         label: "Empty",
         description: "Just problem.yaml and a statement; bring your own files.",

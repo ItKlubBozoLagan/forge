@@ -43,6 +43,8 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
     if (!group) output.errors.push(`Unknown group "${params.group}"`);
     if (!candidate) output.errors.push(`Unknown solution "${params.solution}"`);
     if (!plan.main) output.errors.push("The package has no main solution");
+    if (candidate?.outputs || plan.main?.outputs)
+        output.errors.push("Stress testing needs programs: a directory of outputs cannot answer new tests");
     if (!params.args.includes("{seed}")) output.errors.push("The arguments must contain {seed}");
     if (!generatorPath || !group || !candidate || !plan.main || output.errors.length > 0) return output;
 

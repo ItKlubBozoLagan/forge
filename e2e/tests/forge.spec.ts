@@ -40,7 +40,7 @@ test("creates a problem from a template and builds it green", async ({ page }) =
 test("shows a test's input and answer", async ({ page }) => {
     await signIn(page, "Ana");
     await page.goto(`/p/${problemId}/builds`);
-    await page.getByRole("button", { name: "samples/1" }).click();
+    await page.getByRole("button", { name: "samples/1" }).first().click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toContainText("5 6");
     await expect(dialog).toContainText("1 5 3 3 2");
@@ -233,4 +233,65 @@ test("stays usable on a phone-sized screen", async ({ page }) => {
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         expect(overflow, `horizontal overflow on ${path || "the problems page"}`).toBeLessThanOrEqual(1);
     }
+});
+
+test("shows what the validator said about every test", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Checked Tests");
+    await build(page, "green");
+    const summary = page.getByTestId("validation-summary");
+    await expect(summary).toContainText("all valid");
+    await expect(summary).toContainText("validator.py");
+    // a test of "small" must also satisfy "full", which depends on it
+    await expect(page.getByTestId("test-row-small/1")).toContainText("for small, full");
+
+    // 2000 numbers in a group that allows at most 1000
+    const manifest = await readFile(page, id, "problem.yaml");
+    await openFile(page, id, "problem.yaml");
+    await replaceEditorContent(page, manifest.replace('args: "n=1000 mode=equal seed=9"', 'args: "n=2000 mode=equal seed=9"'));
+    await expect.poll(() => readFile(page, id, "problem.yaml")).toContain("n=2000");
+    await build(page, "red");
+    await expect(page.getByTestId("validation-summary")).toContainText("1 rejected");
+    const row = page.getByTestId("test-row-small/4");
+    await expect(row).toContainText("invalid for small");
+    await expect(row).toContainText("N=2000");
+
+    // without a validator the report says so instead of showing nothing
+    await openFile(page, id, "problem.yaml");
+    await replaceEditorContent(page, manifest.replace("validator: validator.py\n", ""));
+    await expect.poll(() => readFile(page, id, "problem.yaml")).not.toContain("validator:");
+    await build(page, "green");
+    await expect(page.getByTestId("validation-summary")).toContainText("no validator");
+    await expect(page.getByTestId("test-row-small/1")).toContainText("not validated");
+});
+
+test("builds an interactive task", async ({ page }) => {
+    await signIn(page, "Ana");
+    await createProblem(page, "Guess It", "interactive");
+    await expect(page.getByTestId("file-interactor.py")).toBeVisible();
+    await build(page, "green");
+    await expect(page.getByTestId("cell-solutions/binary.py-secret/2")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/linear.py-secret/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/linear.py-secret/2")).toContainText(/WA|TLE/);
+});
+
+test("builds an output-only task whose solutions are output files", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Pack It", "output-only");
+    await expect(page.getByTestId("file-solutions/greedy/tests/1.out")).toBeVisible();
+    await build(page, "green");
+    await expect(page.getByTestId("cell-solutions/main.py-tests/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/greedy-tests/1")).toContainText("PA");
+    await expect(page.getByTestId("cell-solutions/unfinished-tests/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/unfinished-tests/2")).toContainText("WA");
+    await expect(page.getByText(/no\s+time limit to calibrate/i)).toBeVisible();
+    await expect(page.getByTestId("validation-summary")).toContainText("all valid");
+
+    // an invalid output file is a wrong answer, and the build says the expectation broke
+    await openFile(page, id, "solutions/greedy/tests/1.out");
+    await replaceEditorContent(page, "2\n1 1\n");
+    await expect.poll(() => readFile(page, id, "solutions/greedy/tests/1.out")).toContain("1 1");
+    await build(page, "red");
+    await expect(page.getByTestId("cell-solutions/greedy-tests/1")).toContainText("WA");
+    await expect(page.getByTestId("issues")).toContainText("solutions/greedy is expected to be PA");
 });

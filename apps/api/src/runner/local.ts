@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Program, Runner, RunOutcome, RunRequest, RunResult } from "./types";
+import { CheckRequest, Program, Runner, RunOutcome, RunRequest, RunResult } from "./types";
 
 type Executed = { code: number | null; stdout: string; stderr: string; timeMs: number; timedOut: boolean };
 
@@ -59,6 +59,70 @@ const compile = async (directory: string, name: string, program: Program): Promi
     return { error: `the local runner does not support ${program.language}` };
 };
 
+type Interaction = { code: number | null; stderr: string; timeMs: number; timedOut: boolean; verdict: string | undefined };
+
+/**
+ * Mirrors the evaluator: the interactor reads the test, one extra newline and then whatever
+ * the solution prints; what it prints goes to the solution; its verdict is the content of
+ * `interactor_meta.out` in its working directory.
+ */
+const interact = async (
+    solution: { command: string; args: string[] },
+    interactor: { command: string; args: string[] },
+    directory: string,
+    stdin: string,
+    timeoutMs: number,
+): Promise<Interaction> => {
+    await mkdir(directory, { recursive: true });
+    const started = process.hrtime.bigint();
+    const judge = spawn(interactor.command, interactor.args, { cwd: directory, stdio: ["pipe", "pipe", "ignore"] });
+    const child = spawn(solution.command, solution.args, { stdio: ["pipe", "pipe", "pipe"] });
+    const err: Buffer[] = [];
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGKILL");
+        judge.kill("SIGKILL");
+    }, timeoutMs);
+    for (const stream of [judge.stdin, child.stdin]) stream.on("error", () => {});
+    judge.on("error", () => {});
+    child.on("error", () => {});
+    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+    judge.stdin.write(`${stdin}\n`);
+    child.stdout.pipe(judge.stdin);
+    judge.stdout.pipe(child.stdin);
+    const closed = (process: typeof child) => new Promise<number | null>((resolve) => process.on("close", (code) => resolve(code)));
+    const [code] = await Promise.all([closed(child), closed(judge)]);
+    clearTimeout(timer);
+    const verdict = await readFile(join(directory, "interactor_meta.out"), "utf8").then(
+        (text) => text.trim(),
+        () => undefined,
+    );
+    return {
+        code,
+        stderr: Buffer.concat(err).toString("utf8"),
+        timeMs: Number((process.hrtime.bigint() - started) / 1_000_000n),
+        timedOut,
+        verdict,
+    };
+};
+
+/** Maps what a checker or interactor reported to a run status. */
+const verdictOf = (text: string): Pick<RunOutcome, "status" | "data" | "message"> => {
+    if (text.startsWith("custom:")) return { status: "custom", data: text.slice("custom:".length) };
+    if (["ac", "accepted"].includes(text.toLowerCase())) return { status: "accepted" };
+    if (["wa", "wrong_answer"].includes(text.toLowerCase())) return { status: "wrong_answer" };
+    return { status: "judge_error", message: `the checker printed "${text.slice(0, 100)}"` };
+};
+
+const runChecker = async (checker: { command: string; args: string[] }, stdin: string, expected: string, output: string) => {
+    const separator = `[${randomBytes(16).toString("hex")}]\n`;
+    const checkerInput = `${separator}${stdin}\n${separator}${expected}\n${separator}${output}\n${separator}`;
+    const checked = await execute(checker.command, checker.args, checkerInput, 30_000);
+    if (checked.code !== 0) return { status: "judge_error" as const, message: "the checker crashed" };
+    return verdictOf(checked.stdout.trim());
+};
+
 const tokens = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 /**
@@ -82,7 +146,22 @@ export class LocalRunner implements Runner {
             const runs: RunOutcome[] = [];
             for (const input of request.inputs) {
                 if (request.interactive) {
-                    runs.push({ id: input.id, status: "judge_error", timeMs: 0, memoryKb: 0, message: "the local runner cannot run interactive tasks" });
+                    const result = await interact(
+                        program,
+                        checker as { command: string; args: string[] },
+                        join(directory, `interaction-${runs.length}`),
+                        input.stdin,
+                        request.timeLimitMs,
+                    );
+                    const base = { id: input.id, timeMs: result.timeMs, memoryKb: 0 };
+                    // an interactor that already rejected the interaction decides the verdict,
+                    // whatever happens to the solution once its input closes
+                    const rejected = result.verdict !== undefined && verdictOf(result.verdict).status !== "accepted";
+                    if (result.timedOut) runs.push({ ...base, status: "time_limit_exceeded" });
+                    else if (rejected) runs.push({ ...base, ...verdictOf(result.verdict!) });
+                    else if (result.code !== 0) runs.push({ ...base, status: "runtime_error", message: result.stderr.slice(0, 2000) });
+                    else if (result.verdict === undefined) runs.push({ ...base, status: "judge_error", message: "the interactor wrote no verdict" });
+                    else runs.push({ ...base, ...verdictOf(result.verdict) });
                     continue;
                 }
                 const result = await execute(program.command, program.args, input.stdin, request.timeLimitMs);
@@ -104,15 +183,31 @@ export class LocalRunner implements Runner {
                     runs.push({ ...base, status: same ? "accepted" : "wrong_answer", stdout: result.stdout });
                     continue;
                 }
-                const separator = `[${randomBytes(16).toString("hex")}]\n`;
-                const checkerInput = `${separator}${input.stdin}\n${separator}${input.expected ?? ""}\n${separator}${result.stdout}\n${separator}`;
-                const checked = await execute((checker as { command: string }).command, (checker as { args: string[] }).args, checkerInput, 30_000);
-                const text = checked.stdout.trim();
-                if (checked.code !== 0) runs.push({ ...base, status: "judge_error", message: "the checker crashed" });
-                else if (text.startsWith("custom:")) runs.push({ ...base, status: "custom", data: text.slice("custom:".length), stdout: result.stdout });
-                else if (["ac", "accepted"].includes(text.toLowerCase())) runs.push({ ...base, status: "accepted", stdout: result.stdout });
-                else if (["wa", "wrong_answer"].includes(text.toLowerCase())) runs.push({ ...base, status: "wrong_answer", stdout: result.stdout });
-                else runs.push({ ...base, status: "judge_error", message: `the checker printed "${text.slice(0, 100)}"` });
+                runs.push({
+                    ...base,
+                    ...(await runChecker(checker as { command: string; args: string[] }, input.stdin, input.expected ?? "", result.stdout)),
+                    stdout: result.stdout,
+                });
+            }
+            return { runs };
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
+    }
+
+    async check(request: CheckRequest): Promise<RunResult> {
+        const directory = await mkdtemp(join(tmpdir(), "forge-check-"));
+        try {
+            let checker: Compiled | undefined;
+            if (typeof request.checking === "object") {
+                checker = await compile(directory, "checker", request.checking);
+                if ("error" in checker) return { compileError: checker.error, runs: [] };
+            }
+            const runs: RunOutcome[] = [];
+            for (const input of request.inputs) {
+                const base = { id: input.id, timeMs: 0, memoryKb: 0 };
+                if (checker) runs.push({ ...base, ...(await runChecker(checker, input.stdin, input.expected, input.output)) });
+                else runs.push({ ...base, status: tokens(input.output) === tokens(input.expected) ? "accepted" : "wrong_answer" });
             }
             return { runs };
         } finally {

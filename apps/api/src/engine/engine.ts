@@ -61,6 +61,7 @@ export type BuildOutput = {
     type?: string;
     scoring?: string;
     checker?: string;
+    validator?: string;
     runner: { pool: string; hardwareClass: string };
 };
 
@@ -344,6 +345,55 @@ export class Engine {
         return output;
     }
 
+    /** Output-only tasks: judges output files that are part of the package. */
+    async checkOutputs(
+        checker: Program | undefined,
+        tests: Array<{ id: string; inputHash: string; answerHash: string; outputHash: string }>,
+    ): Promise<Map<string, RawRun & { key: string }>> {
+        const checkerId = checker ? sha256(checker.source) : "tokens";
+        const keyOfTest = (test: { inputHash: string; answerHash: string; outputHash: string }) =>
+            keyOf("chk", test.outputHash, test.inputHash, test.answerHash, checkerId);
+        const known = await this.cached<RawRun>(tests.map(keyOfTest));
+        const missing = new Map<string, (typeof tests)[number]>();
+        for (const test of tests) {
+            const key = keyOfTest(test);
+            if (!known.has(key)) missing.set(key, test);
+        }
+        if (missing.size > 0) {
+            const inputs = [];
+            for (const [key, test] of missing)
+                inputs.push({
+                    id: key,
+                    stdin: await this.ctx.blobs.text(this.ctx.workspaceId, test.inputHash),
+                    expected: await this.ctx.blobs.text(this.ctx.workspaceId, test.answerHash),
+                    output: await this.ctx.blobs.text(this.ctx.workspaceId, test.outputHash),
+                });
+            const result = await this.ctx.scheduler.submit(this.ctx.workspaceId, () =>
+                this.ctx.runner.check({ checking: checker ?? "tokens", inputs }),
+            );
+            const fresh: Array<Stored<RawRun>> = [];
+            if (result.compileError !== undefined) {
+                for (const key of missing.keys())
+                    known.set(key, { status: "judge_error", timeMs: 0, memoryKb: 0, message: `the checker does not compile:\n${result.compileError}`.slice(0, 4000) });
+            } else {
+                for (const run of result.runs) {
+                    const raw: RawRun = { status: run.status, data: run.data, timeMs: 0, memoryKb: 0, message: run.message };
+                    if (run.status === "judge_error") known.set(run.id, raw);
+                    else fresh.push({ key: run.id, value: raw });
+                }
+            }
+            await this.store("chk", fresh);
+            for (const entry of fresh) known.set(entry.key, entry.value);
+        }
+        const output = new Map<string, RawRun & { key: string }>();
+        for (const test of tests) {
+            const key = keyOfTest(test);
+            const raw = known.get(key);
+            if (raw) output.set(test.id, { ...raw, key });
+        }
+        return output;
+    }
+
     /** Fails with a readable message when a tool program does not compile. */
     async compiles(program: Program): Promise<string | null> {
         const key = keyOf("compile", sha256(program.source), program.language);
@@ -398,6 +448,8 @@ export class Engine {
             limits: plan?.manifest.limits,
             type: plan?.manifest.type,
             scoring: plan?.manifest.scoring.mode,
+            checker: plan?.checker?.path,
+            validator: plan?.validator?.path,
             runner,
         });
         if (!plan || issues.some((issue) => issue.severity === "error")) return broken();
@@ -511,6 +563,9 @@ export class Engine {
         if (plan.manifest.type === "interactive") {
             const empty = await this.ctx.blobs.put(this.ctx.workspaceId, Buffer.alloc(0));
             for (const test of withInput) test.answerHash = empty.hash;
+        } else if (plan.main!.outputs) {
+            // output-only task whose reference answers are files in the package
+            for (const test of withInput) test.answerHash = this.ctx.tree[plan.main!.outputs[test.id] ?? ""]?.hash;
         } else {
             const main = await this.program(plan.main!.path);
             const answers = await this.answers(main, limits, withInput.map((test) => ({ id: test.id, inputHash: test.inputHash! })));
@@ -527,9 +582,16 @@ export class Engine {
         const runnable = tests
             .filter((test) => test.inputHash && test.answerHash)
             .map((test) => ({ id: test.id, inputHash: test.inputHash!, answerHash: test.answerHash! }));
-        const solutions = options.adhoc
-            ? [{ path: options.adhoc.name, program: { source: options.adhoc.source, language: options.adhoc.language } as Program }]
-            : await Promise.all(plan.solutions.map(async (solution) => ({ path: solution.path, program: await this.program(solution.path) })));
+        type Runnable = { path: string; program?: Program; outputs?: Record<string, string> };
+        const solutions: Runnable[] = options.adhoc
+            ? [{ path: options.adhoc.name, program: { source: options.adhoc.source, language: options.adhoc.language } }]
+            : await Promise.all(
+                  plan.solutions.map(async (solution) =>
+                      solution.outputs
+                          ? { path: solution.path, outputs: solution.outputs }
+                          : { path: solution.path, program: await this.program(solution.path) },
+                  ),
+              );
         const effectivePlan: Plan = options.adhoc
             ? { ...plan, solutions: [{ path: options.adhoc.name, language: options.adhoc.language, main: false, expect: {} }] }
             : plan;
@@ -539,18 +601,32 @@ export class Engine {
         progress("solutions", 0, solutions.length);
         await Promise.all(
             solutions.map(async (solution) => {
-                const raw = await this.runSolution(
-                    solution.program,
-                    checker,
-                    { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb },
-                    runnable,
-                    options.remeasure,
-                );
+                const raw = new Map<string, RawRun & { key?: string }>();
+                if (solution.program) {
+                    const runs = await this.runSolution(
+                        solution.program,
+                        checker,
+                        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb },
+                        runnable,
+                        options.remeasure,
+                    );
+                    for (const [id, run] of runs) raw.set(id, run);
+                } else {
+                    const submitted = [];
+                    for (const test of runnable) {
+                        const entry = this.ctx.tree[solution.outputs?.[test.id] ?? ""];
+                        if (entry) submitted.push({ ...test, outputHash: entry.hash });
+                        else raw.set(test.id, { status: "wrong_answer", timeMs: 0, memoryKb: 0, message: "no output file for this test" });
+                    }
+                    for (const [id, run] of await this.checkOutputs(checker, submitted)) raw.set(id, run);
+                }
                 const row: Matrix[string] = {};
                 const keys: Record<string, string> = {};
-                for (const [id, run] of raw) {
-                    row[id] = judge(run, limits.time_ms);
-                    keys[id] = run.key;
+                for (const test of runnable) {
+                    const run = raw.get(test.id);
+                    if (!run) continue;
+                    row[test.id] = judge(run, limits.time_ms);
+                    if (run.key) keys[test.id] = run.key;
                 }
                 matrix[solution.path] = row;
                 runKeys[solution.path] = keys;
@@ -571,6 +647,7 @@ export class Engine {
             type: plan.manifest.type,
             scoring: plan.manifest.scoring.mode,
             checker: plan.checker?.path,
+            validator: plan.validator?.path,
             runner,
         };
     }

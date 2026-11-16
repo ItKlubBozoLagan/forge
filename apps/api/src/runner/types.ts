@@ -24,6 +24,12 @@ export type RunRequest = {
     memoryLimitMb: number;
 };
 
+/** Judges outputs that already exist (output-only tasks): nothing of the contestant's runs. */
+export type CheckRequest = {
+    checking: "tokens" | Program;
+    inputs: Array<{ id: string; stdin: string; expected: string; output: string }>;
+};
+
 export type RunOutcome = RawRun & { id: string; stdout?: string };
 
 export type RunResult = {
@@ -41,5 +47,6 @@ export interface Runner {
     readonly pool: string;
     readonly hardwareClass: string;
     run(request: RunRequest): Promise<RunResult>;
+    check(request: CheckRequest): Promise<RunResult>;
     close(): Promise<void>;
 }

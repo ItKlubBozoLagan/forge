@@ -12,12 +12,13 @@ import type { BuildOutput, Problem, Revision } from "../../../lib/types";
 import { BuildBadge } from "../../../ui/Badge";
 import { Button } from "../../../ui/Button";
 import { cx } from "../../../ui/cx";
-import { ErrorNotice, Loading, Progress } from "../../../ui/misc";
+import { Card, ErrorNotice, Loading, Progress } from "../../../ui/misc";
 import { useToast } from "../../../ui/Toast";
 import { CalibrationCard } from "./Calibration";
 import { KillCard } from "./Kills";
 import { Matrix } from "./Matrix";
 import { TestDialog } from "./TestDialog";
+import { TestsCard } from "./Tests";
 import { TimingPanel } from "./Timing";
 
 const PHASES: Record<string, string> = {
@@ -165,13 +166,25 @@ export const BuildDetail = ({
 
                     <Matrix output={output} onOpenTest={setOpenTest} />
 
+                    <TestsCard output={output} onOpenTest={setOpenTest} />
+
                     {report.solutions.length > 0 && (
                         <div className="grid gap-3 lg:grid-cols-2">
+                            {output.type === "output-only" ? (
+                                <Card title="Time limit">
+                                    <p className="text-sm text-muted">
+                                        Output-only task: contestants submit files, so there is no
+                                        time limit to calibrate. The limits in problem.yaml only
+                                        bound the programs listed as solutions.
+                                    </p>
+                                </Card>
+                            ) : (
                             <CalibrationCard
                                 calibration={report.calibration}
                                 hardwareClass={output.runner.hardwareClass}
                                 referenceClass={problem.workspace.referenceClass}
                             />
+                            )}
                             <KillCard
                                 kills={report.kills}
                                 decisive={report.decisiveTests}
@@ -180,7 +193,9 @@ export const BuildDetail = ({
                         </div>
                     )}
 
-                    {report.solutions.length > 0 && <TimingPanel buildId={data.id} />}
+                    {report.solutions.length > 0 && output.type !== "output-only" && (
+                        <TimingPanel buildId={data.id} />
+                    )}
                     <TestDialog
                         problemId={problem.id}
                         output={output}

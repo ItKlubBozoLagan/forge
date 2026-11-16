@@ -18,7 +18,7 @@ export type Constraints = z.infer<typeof Constraints>;
 export const TASK_TYPES = ["batch", "interactive", "output-only", "communication", "grader"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 /** Task types the current runner protocol can execute. The rest can be described but not built. */
-export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive"];
+export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive", "output-only"];
 
 const TestSpec = z.union([
     z.object({ manual: FilePath }).strict(),
@@ -122,7 +122,13 @@ export type PlannedGroup = {
 
 export type PlannedSolution = {
     path: string;
-    language: Language;
+    /** Set for a program. Output-only tasks also accept a directory of outputs, see `outputs`. */
+    language?: Language;
+    /**
+     * Output-only tasks: the solution is a directory of answer files, one per test at
+     * `<path>/<group>/<index>.out`. Maps test id to the file; tests with no file are absent.
+     */
+    outputs?: Record<string, string>;
     main: boolean;
     /** Expected outcome per group name. */
     expect: Record<string, string>;
@@ -348,7 +354,34 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
             continue;
         }
         seen.add(solution.path);
-        const resolved = program(solution.path, "Solution");
+        let resolved: Pick<PlannedSolution, "path" | "language" | "outputs"> | undefined;
+        const directory = `${solution.path.replace(/\/+$/, "")}/`;
+        if (manifest.type === "output-only" && !fileSet.has(solution.path) && files.some((file) => file.startsWith(directory))) {
+            const outputs: Record<string, string> = {};
+            const expected = new Set<string>();
+            for (const test of tests) {
+                const file = `${directory}${test.id}.out`;
+                expected.add(file);
+                if (fileSet.has(file)) outputs[test.id] = file;
+            }
+            const stray = files.filter((file) => file.startsWith(directory) && !expected.has(file));
+            if (stray.length > 0)
+                warning(
+                    "solution.stray-output",
+                    `${solution.path} has ${stray.length} file(s) that match no test (for example ${stray[0]}); outputs are named <group>/<index>.out`,
+                    solution.path,
+                );
+            if (solution.role === "main") {
+                const missing = tests.filter((test) => !outputs[test.id]).map((test) => test.id);
+                if (missing.length > 0)
+                    error(
+                        "solution.main-output",
+                        `The main solution has no output for ${missing.length} test(s): ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ", ..." : ""}`,
+                        solution.path,
+                    );
+            }
+            resolved = { path: solution.path, outputs };
+        } else resolved = program(solution.path, "Solution");
         if (!resolved) continue;
         const main = solution.role === "main";
         const expect: Record<string, string> = {};

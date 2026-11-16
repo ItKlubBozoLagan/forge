@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { App, createApp } from "../src/app";
 import { loadConfig } from "../src/config";
 import { LocalRunner } from "../src/runner/local";
-import { Runner, RunRequest } from "../src/runner/types";
+import { CheckRequest, Runner, RunRequest } from "../src/runner/types";
 import { createServer } from "../src/server";
 
 const TEST_DATABASE = process.env.TEST_DATABASE_URL ?? "postgresql://kontestis:kontestis@localhost:5432/forge_test";
@@ -18,6 +18,10 @@ export class CountingRunner implements Runner {
     run(request: RunRequest) {
         this.calls += 1;
         return this.inner.run(request);
+    }
+    check(request: CheckRequest) {
+        this.calls += 1;
+        return this.inner.check(request);
     }
     close() {
         return this.inner.close();

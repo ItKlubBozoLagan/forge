@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
 import { Config } from "../config";
-import { RunInput, Runner, RunOutcome, RunRequest, RunResult } from "./types";
+import { CheckRequest, RunInput, Runner, RunOutcome, RunRequest, RunResult } from "./types";
 
 type EvaluatorVerdict = { type: string; data?: string | null };
 type EvaluatorResult = {
@@ -23,6 +23,7 @@ type EvaluatorResult = {
 /** Evaluator messages carry test data inline, so large batches are split. */
 const MAX_CHUNK_BYTES = 6 * 1024 * 1024;
 const MAX_CHUNK_TESTS = 64;
+const CHECK_CONCURRENCY = 8;
 
 const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
 
@@ -95,6 +96,10 @@ export class EvaluatorRunner implements Runner {
                 evaluation: request.interactive ? { Interactive: body } : { Batch: body },
             },
         };
+        return this.interpret(await this.send(id, message), inputs, request.checking === "capture");
+    }
+
+    private async send(id: string, message: unknown): Promise<EvaluatorResult | undefined> {
         const answer = new Promise<EvaluatorResult | undefined>((resolve) => {
             this.pending.set(id, resolve);
             setTimeout(() => {
@@ -102,8 +107,10 @@ export class EvaluatorRunner implements Runner {
             }, this.config.runner.jobTimeoutMs).unref();
         });
         await this.client.rPush(this.config.runner.queueKey, JSON.stringify(message));
-        const result = await answer;
+        return answer;
+    }
 
+    private interpret(result: EvaluatorResult | undefined, inputs: Array<{ id: string }>, capture: boolean): RunResult {
         if (!result)
             return {
                 runs: inputs.map((input) => ({
@@ -133,7 +140,7 @@ export class EvaluatorRunner implements Runner {
                 case "wrong_answer":
                     // without a checker the evaluator compares against an empty expected
                     // output; when only capturing, any clean exit is a success
-                    return { ...base, status: request.checking === "capture" ? "accepted" : "wrong_answer", stdout };
+                    return { ...base, status: capture ? "accepted" : "wrong_answer", stdout };
                 case "custom":
                     return { ...base, status: "custom", data: testcase.verdict.data ?? "", stdout };
                 case "time_limit_exceeded":
@@ -151,6 +158,41 @@ export class EvaluatorRunner implements Runner {
             }
         });
         return { runs };
+    }
+
+    /** Output-only judging: one evaluation per output, a few in flight at a time. */
+    async check(request: CheckRequest): Promise<RunResult> {
+        const checker =
+            typeof request.checking === "object"
+                ? { script: request.checking.source, language: request.checking.language }
+                : null;
+        const merged: RunResult = { runs: [] };
+        for (let offset = 0; offset < request.inputs.length; offset += CHECK_CONCURRENCY) {
+            const results = await Promise.all(
+                request.inputs.slice(offset, offset + CHECK_CONCURRENCY).map(async (input) => {
+                    const id = randomUUID();
+                    const message = {
+                        BeginEvaluation: {
+                            output_queue: this.resultQueue,
+                            evaluation: {
+                                OutputOnly: {
+                                    id,
+                                    output: input.output,
+                                    testcase: { id: input.id, input: input.stdin, output: input.expected },
+                                    checker,
+                                },
+                            },
+                        },
+                    };
+                    return this.interpret(await this.send(id, message), [input], false);
+                }),
+            );
+            for (const result of results) {
+                if (result.compileError !== undefined) return result;
+                merged.runs.push(...result.runs);
+            }
+        }
+        return merged;
     }
 
     async run(request: RunRequest): Promise<RunResult> {

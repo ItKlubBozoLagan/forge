@@ -131,6 +131,68 @@ print("AC" if actual == expected else "custom:0.5" if abs(actual - expected) == 
     });
 });
 
+describe("task types", () => {
+    it("builds an interactive task by piping the solution to the interactor", async () => {
+        const id = await createProblem(ana, "guess", "interactive");
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        const byPath = Object.fromEntries(result.output.report.solutions.map((solution: any) => [solution.path, solution]));
+        expect(byPath["solutions/binary.py"].score).toBe(1);
+        expect(byPath["solutions/linear.py"].groups.map((group: any) => group.summary)).toEqual(["AC", "WA"]);
+        expect(result.output.matrix["solutions/linear.py"]["secret/1"].verdict).toBe("AC");
+    });
+
+    it("builds an output-only task from programs and from directories of outputs", async () => {
+        const id = await createProblem(ana, "pack", "output-only");
+        const result = await build(ana, id);
+        const report = result.output.report;
+        expect(report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.type).toBe("output-only");
+        const byPath = Object.fromEntries(report.solutions.map((solution: any) => [solution.path, solution]));
+        expect(byPath["solutions/main.py"].score).toBe(100);
+        // 8/10 and 17/20 of the two tests, averaged
+        expect(byPath["solutions/greedy"].score).toBe(82.5);
+        expect(byPath["solutions/greedy"].groups[1].summary).toBe("PA");
+        expect(byPath["solutions/unfinished"].score).toBe(50);
+        expect(result.output.matrix["solutions/unfinished"]["tests/2"]).toMatchObject({ verdict: "WA", message: "no output file for this test" });
+        // nobody's program is timed, so there is nothing to calibrate
+        expect(report.calibration.slowestAcceptedMs).toBeUndefined();
+
+        // checking outputs is cached like everything else
+        const before = harness.runner.calls;
+        await build(ana, id);
+        expect(harness.runner.calls).toBe(before);
+
+        // filling in the missing output changes the verdict and re-checks only that file
+        await writeFile(ana, id, "solutions/unfinished/tests/2.out", "3\n1 4 5\n");
+        const fixed = await build(ana, id);
+        expect(harness.runner.calls).toBe(before + 1);
+        expect(fixed.output.matrix["solutions/unfinished"]["tests/2"].verdict).toBe("AC");
+        expect(fixed.result).toBe("red");
+        expect(fixed.output.report.issues.map((issue: any) => issue.code)).toContain("expectation.unmet");
+    });
+
+    it("takes reference answers from a directory when the main solution is one", async () => {
+        const id = await createProblem(ana, "pack-files", "output-only");
+        await writeFile(ana, id, "solutions/best/samples/1.out", "2\n1 2\n");
+        await writeFile(ana, id, "solutions/best/tests/1.out", "2\n3 4\n");
+        await writeFile(ana, id, "solutions/best/tests/2.out", "3\n1 4 5\n");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "problem.yaml", manifest.replace("{ path: solutions/main.py, role: main }", "{ path: solutions/best, role: main }\n  - { path: solutions/main.py }"));
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.report.solutions.map((solution: any) => [solution.path, solution.score])).toEqual([
+            ["solutions/best", 100],
+            ["solutions/main.py", 100],
+            ["solutions/greedy", 82.5],
+            ["solutions/unfinished", 50],
+        ]);
+    });
+});
+
 describe("working copy", () => {
     it("rejects an edit based on a stale version of the file", async () => {
         const id = await createProblem(ana, "stale");

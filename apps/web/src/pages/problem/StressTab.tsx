@@ -1,4 +1,4 @@
-import { MANIFEST_PATH, parseManifest } from "@forge/core";
+import { languageOf, MANIFEST_PATH, parseManifest } from "@forge/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, FlaskConical } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -51,7 +51,10 @@ const StressForm = ({ onStarted }: { onStarted: (id: string) => void }) => {
     const manifest = working.manifest;
     const generators = Object.keys(manifest?.generators ?? {});
     const groups = (manifest?.groups ?? []).map((group) => group.name);
-    const solutions = (manifest?.solutions ?? []).filter((solution) => solution.role !== "main");
+    // a directory of outputs (output-only tasks) cannot answer freshly generated tests
+    const solutions = (manifest?.solutions ?? []).filter(
+        (solution) => solution.role !== "main" && languageOf(solution.path),
+    );
 
     const [generator, setGenerator] = useState("");
     const [group, setGroup] = useState("");

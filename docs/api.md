@@ -44,7 +44,7 @@ author), *manage* (owner). Testers are blind: they cannot read files, builds or 
 | Method | Path | Body | Returns |
 |---|---|---|---|
 | GET | `/workspaces/:id/problems` | | `[{ id, name, title, createdAt, role, revisions, lastResult: "green"\|"red"\|null }]` (only problems the caller can access) |
-| POST | `/workspaces/:id/problems` | `{ name, title, template: "ioi"\|"icpc"\|"honi"\|"empty" }` | `{ id, name, title }` |
+| POST | `/workspaces/:id/problems` | `{ name, title, template: "ioi"\|"icpc"\|"honi"\|"interactive"\|"output-only"\|"empty" }` | `{ id, name, title }` |
 | GET | `/problems/:id` | | `{ id, name, title, role, workspace: { id, name, referenceClass }, draftVersion, head: { id, number } \| null, dirty? }` |
 | PATCH | `/problems/:id` | `{ title }` | `{ ok }` (write) |
 | DELETE | `/problems/:id` | | `{ ok }` (manage) |
@@ -115,9 +115,13 @@ A build has `status`: `queued`, `running`, `done`, `failed`, and once done a `re
   matrix: { [solutionPath]: { [testId]: { verdict, score, timeMs, memoryKb, message? } } },
   runKeys: { [solutionPath]: { [testId]: string } },
   groups: [{ name, points, aggregate, sample, depends, constraints, tests: testId[], closure: testId[] }],
-  limits: { time_ms, memory_mb }, type, scoring, checker?, runner: { pool, hardwareClass }
+  limits: { time_ms, memory_mb }, type, scoring, checker?, validator?, runner: { pool, hardwareClass }
 }
 ```
+
+`tests[].validation` holds what the validator said about the test for each group whose constraints
+it must satisfy (its own group and every group depending on it): `null` when valid, otherwise the
+validator's message. It is empty when the package has no validator.
 
 `Verdict` is one of `AC PA WA TLE MLE RE CE JE`. For an invocation, `report.solutions` holds the
 single ad-hoc solution. Blind testers get a redacted output for their own invocations:

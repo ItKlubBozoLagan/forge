@@ -62,9 +62,14 @@ export const useRevisions = (id: string, enabled = true) =>
         queryKey: keys.revisions(id),
         queryFn: () => api.get<Revision[]>(`/problems/${id}/revisions`),
         enabled: enabled && !!id,
+        // a revision is built as soon as it is committed: keep its status moving
+        refetchInterval: (query) =>
+            query.state.data?.some((revision) => active(revision.build?.status)) ? 2000 : false,
     });
 
-const active = (status: string | undefined) => status === "queued" || status === "running";
+function active(status: string | undefined) {
+    return status === "queued" || status === "running";
+}
 
 export const useBuilds = (id: string, kind: BuildKind) =>
     useQuery({

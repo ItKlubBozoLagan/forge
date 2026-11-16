@@ -151,11 +151,11 @@ program
     .description("create a problem and clone it")
     .argument("[dir]", "target directory (default: the name)")
     .requiredOption("--title <title>", "problem title")
-    .option("--template <template>", "ioi|icpc|honi|empty", "ioi")
+    .option("--template <template>", "ioi|icpc|honi|interactive|output-only|empty", "ioi")
     .option("--workspace <id>", "workspace id")
     .action(
         act(async (name: string, dir: string | undefined, opts: { title: string; template: string; workspace?: string }) => {
-            if (!["ioi", "icpc", "honi", "empty"].includes(opts.template)) throw new CliError(`unknown template ${opts.template}`);
+            if (!["ioi", "icpc", "honi", "interactive", "output-only", "empty"].includes(opts.template)) throw new CliError(`unknown template ${opts.template}`);
             const client = makeClient();
             const workspace = await pickWorkspace(client, opts.workspace);
             const created = await client.post<{ id: string; name: string }>(`/workspaces/${workspace}/problems`, {
