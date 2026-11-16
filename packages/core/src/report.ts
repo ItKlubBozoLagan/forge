@@ -195,7 +195,8 @@ export const buildReport = (plan: Plan, matrix: Matrix, upstream: Issue[] = []):
 
     if (calibration.slowestAcceptedMs !== undefined) {
         calibration.headroom = Math.round((timeLimitMs / calibration.slowestAcceptedMs) * 100) / 100;
-        calibration.suggestedMs = niceCeil(calibration.slowestAcceptedMs * HEADROOM_TARGET);
+        // very small limits mostly measure process start-up and noise, so suggestions stop at 500 ms
+        calibration.suggestedMs = niceCeil(Math.max(calibration.slowestAcceptedMs * HEADROOM_TARGET, 500));
         if (calibration.headroom < HEADROOM_TARGET)
             issues.push({
                 severity: "warning",

@@ -1,0 +1,262 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Everything colour-related goes through these variables so the light and dark
+ * themes stay in sync; Tailwind utilities (bg-surface, text-muted, border-line...) map onto them.
+ */
+:root {
+    --bg: #f7f7f8;
+    --surface: #ffffff;
+    --surface-2: #f2f2f4;
+    --surface-3: #e8e8ec;
+    --line: #e1e1e6;
+    --line-strong: #c9c9d1;
+    --fg: #1b1b1f;
+    --muted: #61616b;
+    --subtle: #8a8a94;
+    --accent: #3b5bdb;
+    --accent-hover: #3451c7;
+    --accent-fg: #ffffff;
+    --accent-soft: #e8edff;
+    --danger: #c92a2a;
+    --danger-soft: #ffeaea;
+    --success: #2b8a3e;
+    --success-soft: #e6f6ea;
+    --warning: #b35c00;
+    --warning-soft: #fff3e0;
+    --focus: #4c6ef5;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 16px rgb(0 0 0 / 0.08);
+
+    /* verdict colours: text colour and a tinted background */
+    --v-ac: #237a35;
+    --v-ac-bg: #e3f5e7;
+    --v-wa: #c42b2b;
+    --v-wa-bg: #fde8e8;
+    --v-tle: #9a6200;
+    --v-tle-bg: #fdf1d6;
+    --v-mle: #7b3fc4;
+    --v-mle-bg: #f1e8fc;
+    --v-re: #c2510c;
+    --v-re-bg: #fdebdd;
+    --v-pa: #0b7a75;
+    --v-pa-bg: #def5f3;
+    --v-ce: #5c5f66;
+    --v-ce-bg: #ececef;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #111114;
+        --surface: #18181c;
+        --surface-2: #1f1f24;
+        --surface-3: #2a2a31;
+        --line: #2c2c33;
+        --line-strong: #3d3d46;
+        --fg: #e8e8ec;
+        --muted: #a0a0aa;
+        --subtle: #74747e;
+        --accent: #6d8bff;
+        --accent-hover: #8299ff;
+        --accent-fg: #0d0f1a;
+        --accent-soft: #1e2440;
+        --danger: #ff6b6b;
+        --danger-soft: #3a1c1e;
+        --success: #51cf66;
+        --success-soft: #16301c;
+        --warning: #fcb04a;
+        --warning-soft: #36280f;
+        --focus: #7c96ff;
+        --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.5);
+
+        --v-ac: #69db7c;
+        --v-ac-bg: #173320;
+        --v-wa: #ff8787;
+        --v-wa-bg: #3d1a1c;
+        --v-tle: #ffc04d;
+        --v-tle-bg: #3a2c0c;
+        --v-mle: #c49bff;
+        --v-mle-bg: #2e1f45;
+        --v-re: #ff9f5a;
+        --v-re-bg: #3d2312;
+        --v-pa: #4fd1c5;
+        --v-pa-bg: #0f3330;
+        --v-ce: #b0b3ba;
+        --v-ce-bg: #2a2b30;
+    }
+}
+
+@theme inline {
+    --color-bg: var(--bg);
+    --color-surface: var(--surface);
+    --color-surface-2: var(--surface-2);
+    --color-surface-3: var(--surface-3);
+    --color-line: var(--line);
+    --color-line-strong: var(--line-strong);
+    --color-fg: var(--fg);
+    --color-muted: var(--muted);
+    --color-subtle: var(--subtle);
+    --color-accent: var(--accent);
+    --color-accent-hover: var(--accent-hover);
+    --color-accent-fg: var(--accent-fg);
+    --color-accent-soft: var(--accent-soft);
+    --color-danger: var(--danger);
+    --color-danger-soft: var(--danger-soft);
+    --color-success: var(--success);
+    --color-success-soft: var(--success-soft);
+    --color-warning: var(--warning);
+    --color-warning-soft: var(--warning-soft);
+    --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+        monospace;
+}
+
+html,
+body {
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+}
+
+body {
+    min-width: 320px;
+}
+
+:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+}
+
+/* Verdict colours: always paired with the verdict's text label. */
+.verdict {
+    color: var(--vc, var(--v-ce));
+    background: var(--vb, var(--v-ce-bg));
+}
+.verdict-AC {
+    --vc: var(--v-ac);
+    --vb: var(--v-ac-bg);
+}
+.verdict-WA {
+    --vc: var(--v-wa);
+    --vb: var(--v-wa-bg);
+}
+.verdict-TLE {
+    --vc: var(--v-tle);
+    --vb: var(--v-tle-bg);
+}
+.verdict-MLE {
+    --vc: var(--v-mle);
+    --vb: var(--v-mle-bg);
+}
+.verdict-RE {
+    --vc: var(--v-re);
+    --vb: var(--v-re-bg);
+}
+.verdict-PA {
+    --vc: var(--v-pa);
+    --vb: var(--v-pa-bg);
+}
+.verdict-CE,
+.verdict-JE {
+    --vc: var(--v-ce);
+    --vb: var(--v-ce-bg);
+}
+
+dialog::backdrop {
+    background: rgb(0 0 0 / 0.4);
+}
+
+dialog {
+    color: var(--fg);
+}
+
+/* Rendered statements */
+.markdown {
+    line-height: 1.6;
+    font-size: 15px;
+    overflow-wrap: anywhere;
+}
+.markdown h1 {
+    font-size: 1.6em;
+    font-weight: 650;
+    margin: 0 0 0.6em;
+}
+.markdown h2 {
+    font-size: 1.25em;
+    font-weight: 600;
+    margin: 1.4em 0 0.5em;
+}
+.markdown h3 {
+    font-size: 1.05em;
+    font-weight: 600;
+    margin: 1.2em 0 0.4em;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre,
+.markdown table,
+.markdown blockquote {
+    margin: 0 0 0.9em;
+}
+.markdown ul {
+    list-style: disc;
+    padding-left: 1.4em;
+}
+.markdown ol {
+    list-style: decimal;
+    padding-left: 1.4em;
+}
+.markdown code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background: var(--surface-2);
+    border-radius: 4px;
+    padding: 0.1em 0.3em;
+}
+.markdown pre {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.7em 0.9em;
+    overflow-x: auto;
+}
+.markdown pre code {
+    background: none;
+    padding: 0;
+}
+.markdown table {
+    border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+    border: 1px solid var(--line);
+    padding: 0.3em 0.6em;
+}
+.markdown blockquote {
+    border-left: 3px solid var(--line-strong);
+    padding-left: 0.9em;
+    color: var(--muted);
+}
+.markdown a {
+    color: var(--accent);
+    text-decoration: underline;
+}
+.markdown .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+/* CodeMirror sizing inside our editor wrapper */
+.cm-host .cm-editor {
+    height: 100%;
+    font-size: 13px;
+}
+.cm-host .cm-scroller {
+    font-family: var(--font-mono);
+}
+.cm-host > div {
+    height: 100%;
+}
