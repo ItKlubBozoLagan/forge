@@ -7,7 +7,7 @@
         "dev": "pnpm -r --parallel --filter @forge/api --filter @forge/web dev",
         "build": "pnpm -r build",
         "typecheck": "pnpm -r typecheck",
-        "test": "pnpm -r test",
+        "test": "pnpm -r --filter \"!@forge/e2e\" test",
         "e2e": "pnpm --filter @forge/e2e test"
     }
 }
