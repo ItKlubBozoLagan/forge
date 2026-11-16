@@ -128,7 +128,7 @@ Not done, and why:
   with a manager in between) build. Two contestant processes talking to each other at the same
   time do not: the evaluator runs one program per evaluation
   ([architecture.md](docs/architecture.md#the-runner)). kontestis itself judges neither grader
-  nor communication tasks yet, and the Structure tab edits `grader` and `manager` as text only.
+  nor communication tasks yet.
 - **Comments from hand-written checkers.** The evaluator returns only a verdict. Forge still
   shows why an output was rejected for the default comparison, built-in checkers and testlib
   checkers (it runs those once more to print their comment); a checker written to Forge's own

@@ -6,6 +6,7 @@ import {
     removeGenerator,
     renameConstraint,
     renameGenerator,
+    languageOf,
     RUNNABLE_TASK_TYPES,
     setChecker,
     setConstraint,
@@ -15,6 +16,9 @@ import {
     setScoringMode,
     setTitle,
     setType,
+    setGrader,
+    setGraderHeaders,
+    setManager,
     setValidator,
     TASK_TYPES,
 } from "@forge/core";
@@ -244,6 +248,64 @@ export const GeneralSection = ({ draft, apply, readOnly, programs }: SectionProp
                         </Select>
                     )}
                 </Field>
+                {type === "communication" && (
+                    <Field
+                        label="Manager"
+                        hint="Runs between a solution's two runs: reads the test and the first run's output, prints the second run's input."
+                    >
+                        {(id) => (
+                            <FileSelect
+                                id={id}
+                                value={draft.manager}
+                                files={programs}
+                                none="None"
+                                disabled={readOnly}
+                                onChange={(path) => apply((text) => setManager(text, path))}
+                            />
+                        )}
+                    </Field>
+                )}
+                {type === "grader" &&
+                    (["cpp", "c", "python"] as const).map((language) => (
+                        <Field key={language} label={`Grader (${language})`}>
+                            {(id) => (
+                                <FileSelect
+                                    id={id}
+                                    value={draft.grader?.[language]}
+                                    files={programs.filter((path) => languageOf(path) === language)}
+                                    none="None"
+                                    disabled={readOnly}
+                                    onChange={(path) => apply((text) => setGrader(text, language, path))}
+                                />
+                            )}
+                        </Field>
+                    ))}
+                {type === "grader" && (
+                    <Field
+                        label="Shared headers"
+                        hint="Files that solutions and graders #include, separated by commas."
+                    >
+                        {(id) => (
+                            <CommitInput
+                                id={id}
+                                className="font-mono text-[13px]"
+                                value={(draft.grader?.headers ?? []).join(", ")}
+                                disabled={readOnly}
+                                onCommit={(value) =>
+                                    apply((text) =>
+                                        setGraderHeaders(
+                                            text,
+                                            value
+                                                .split(",")
+                                                .map((item) => item.trim())
+                                                .filter(Boolean),
+                                        ),
+                                    )
+                                }
+                            />
+                        )}
+                    </Field>
+                )}
                 {choice === "builtin:float" && (
                     <Field label="Tolerance (absolute or relative)">
                         {(id) => (

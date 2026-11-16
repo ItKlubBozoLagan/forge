@@ -41,6 +41,8 @@ const TOP_ORDER = [
     "constraints",
     "validator",
     "checker",
+    "grader",
+    "manager",
     "generators",
     "groups",
     "solutions",
@@ -317,6 +319,29 @@ export const setScoringMode = (text: string, mode: "sum" | "binary") =>
     edit(text, (doc, root) =>
         setKey(doc, mapAt(doc, root, "scoring", TOP_ORDER, true), "mode", mode),
     );
+
+/** Sets the manager of a communication task, or removes it when `path` is undefined. */
+export const setManager = (text: string, path: string | undefined) =>
+    edit(text, (doc, root) => setKey(doc, root, "manager", path, TOP_ORDER));
+
+const GRADER_ORDER = ["c", "cpp", "python", "headers"];
+
+/** Sets or removes the grader of one language of a grader task. */
+export const setGrader = (text: string, language: "c" | "cpp" | "python", path: string | undefined) =>
+    edit(text, (doc, root) => {
+        const map = mapAt(doc, root, "grader", TOP_ORDER, true);
+        setKey(doc, map, language, path, GRADER_ORDER);
+        if (map.items.length === 0) deleteKey(root, "grader");
+    });
+
+/** Sets the headers a grader task's solutions and graders share. */
+export const setGraderHeaders = (text: string, headers: string[]) =>
+    edit(text, (doc, root) => {
+        const map = mapAt(doc, root, "grader", TOP_ORDER, true);
+        if (headers.length === 0) deleteKey(map, "headers");
+        else setNode(doc, map, "headers", doc.createNode(headers, { flow: true }), GRADER_ORDER);
+        if (map.items.length === 0) deleteKey(root, "grader");
+    });
 
 /** Sets the validator path, or removes the validator when `path` is undefined. */
 export const setValidator = (text: string, path: string | undefined) =>
@@ -651,6 +676,22 @@ const references = (doc: Document, root: YAMLMap): Reference[] => {
     };
     scalarRef(root, "validator", () => deleteKey(root, "validator"));
     scalarRef(root, "checker", () => deleteKey(root, "checker"));
+    scalarRef(root, "manager", () => deleteKey(root, "manager"));
+    const grader = optionalMap(root, "grader");
+    if (grader) {
+        for (const language of ["c", "cpp", "python"]) scalarRef(grader, language, () => deleteKey(grader, language));
+        const headers = optionalSeq(grader, "headers");
+        if (headers)
+            headers.items.forEach((item, index) => {
+                const value = isScalar(item) && typeof item.value === "string" ? item.value : undefined;
+                if (value === undefined) return;
+                result.push({
+                    path: value,
+                    set: (path) => void headers.set(index, path),
+                    remove: () => void (headers.items = headers.items.filter((entry) => entry !== item)),
+                });
+            });
+    }
     const generators = optionalMap(root, "generators");
     if (generators)
         for (const pair of generators.items as Pair[]) {
@@ -768,6 +809,8 @@ export type ManifestDraft = {
     validator?: string;
     /** A path, a built-in (`{ builtin, eps? }`) or anything else, kept as it is. */
     checker?: unknown;
+    manager?: string;
+    grader?: { c?: string; cpp?: string; python?: string; headers: string[] };
     generators: Record<string, string>;
     groups: DraftGroup[];
     solutions: DraftSolution[];
@@ -871,6 +914,13 @@ export const readManifestDraft = (
         constraints: bounds(raw.constraints, "constraints", problems),
         validator: str(raw.validator),
         checker: raw.checker ?? undefined,
+        manager: str(raw.manager),
+        grader: isRecord(raw.grader)
+            ? {
+                  ...clean({ c: str(raw.grader.c), cpp: str(raw.grader.cpp), python: str(raw.grader.python) }),
+                  headers: Array.isArray(raw.grader.headers) ? raw.grader.headers.filter((item): item is string => typeof item === "string") : [],
+              }
+            : undefined,
         generators: strings(record(raw.generators, "generators")),
         groups,
         solutions,

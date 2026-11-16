@@ -37,6 +37,9 @@ import {
     updateGroup,
     updateSolution,
     updateTest,
+    setGrader,
+    setGraderHeaders,
+    setManager,
 } from "../src";
 
 const IOI = templateFiles("ioi", "pair-sum", "Pair Sum")["problem.yaml"]!;
@@ -377,5 +380,28 @@ describe("readManifestDraft", () => {
 
     it("refuses to edit text that is not YAML", () => {
         expect(() => setTitle("groups: [", "x")).toThrow(ManifestEditError);
+    });
+});
+
+describe("grader and manager", () => {
+    const base = "name: demo # keep me\ntype: grader\nlimits: { time_ms: 1000, memory_mb: 256 }\ngroups:\n  - name: all\n    tests: []\n";
+    it("sets graders, headers and the manager, and follows renames", () => {
+        let text = setGrader(base, "cpp", "grader/grader.cpp");
+        text = setGrader(text, "python", "grader/grader.py");
+        text = setGraderHeaders(text, ["grader/task.h"]);
+        text = setManager(text, "manager.py");
+        expect(text).toContain("# keep me");
+        const draft = readManifestDraft(text).draft!;
+        expect(draft.grader).toEqual({ cpp: "grader/grader.cpp", python: "grader/grader.py", headers: ["grader/task.h"] });
+        expect(draft.manager).toBe("manager.py");
+        // the keys land after the checker's place and before the groups
+        expect(text.indexOf("grader:")).toBeLessThan(text.indexOf("groups:"));
+
+        const moved = readManifestDraft(renameReferences(text, "grader", "judge")).draft!;
+        expect(moved.grader).toEqual({ cpp: "judge/grader.cpp", python: "judge/grader.py", headers: ["judge/task.h"] });
+        const dropped = readManifestDraft(removeReferences(removeReferences(text, "grader/task.h"), "manager.py")).draft!;
+        expect(dropped.grader?.headers).toEqual([]);
+        expect(dropped.manager).toBeUndefined();
+        expect(readManifestDraft(setGrader(setGrader(setGraderHeaders(text, []), "cpp", undefined), "python", undefined)).draft!.grader).toBeUndefined();
     });
 });
