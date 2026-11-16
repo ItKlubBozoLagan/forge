@@ -120,7 +120,9 @@ export const TestsCard = ({
                                             )}
                                         </Td>
                                         <Td className="text-right font-mono text-xs whitespace-nowrap">
-                                            {test.inputSize === undefined ? "-" : formatBytes(test.inputSize)}
+                                            {test.inputSize === undefined
+                                                ? "-"
+                                                : formatBytes(test.inputSize)}
                                         </Td>
                                         <Td>
                                             {test.error ? (
@@ -128,19 +130,27 @@ export const TestsCard = ({
                                                     {test.error.split("\n")[0]}
                                                 </span>
                                             ) : results.length === 0 ? (
-                                                <span className="text-xs text-subtle">not validated</span>
+                                                <span className="text-xs text-subtle">
+                                                    not validated
+                                                </span>
                                             ) : failures.length === 0 ? (
                                                 <span className="inline-flex flex-wrap items-center gap-1.5 text-xs">
                                                     <Badge tone="success">valid</Badge>
                                                     <span className="text-muted">
-                                                        for {results.map(([group]) => group).join(", ")}
+                                                        for{" "}
+                                                        {results.map(([group]) => group).join(", ")}
                                                     </span>
                                                 </span>
                                             ) : (
                                                 <ul className="flex flex-col gap-1 text-xs">
                                                     {failures.map(([group, message]) => (
-                                                        <li key={group} className="flex flex-wrap items-start gap-1.5">
-                                                            <Badge tone="danger">invalid for {group}</Badge>
+                                                        <li
+                                                            key={group}
+                                                            className="flex flex-wrap items-start gap-1.5"
+                                                        >
+                                                            <Badge tone="danger">
+                                                                invalid for {group}
+                                                            </Badge>
                                                             <span className="text-danger">
                                                                 {message?.split("\n")[0]}
                                                             </span>

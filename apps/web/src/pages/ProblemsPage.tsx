@@ -14,6 +14,7 @@ import { Dialog } from "../ui/Dialog";
 import { Field, Input, Select } from "../ui/Field";
 import { EmptyState, ErrorNotice, Loading, PageTitle } from "../ui/misc";
 import { Table, TableWrap, Td, Th, Tr } from "../ui/Table";
+import { PolygonImport } from "./PolygonImport";
 
 const TEMPLATE_INFO: Record<TemplateFormat, { label: string; description: string }> = {
     ioi: {
@@ -194,13 +195,16 @@ export const ProblemsPage = () => {
     );
 
     const newButton = (
-        <Button
-            variant="primary"
-            icon={<Plus className="size-4" />}
-            onClick={() => setCreating(true)}
-        >
-            New problem
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+            {workspaceId && <PolygonImport workspaceId={workspaceId} />}
+            <Button
+                variant="primary"
+                icon={<Plus className="size-4" />}
+                onClick={() => setCreating(true)}
+            >
+                New problem
+            </Button>
+        </div>
     );
 
     return (

@@ -12,6 +12,7 @@
     "dependencies": {
         "@fastify/cookie": "^11.0.1",
         "@forge/core": "workspace:*",
+        "fast-xml-parser": "4.5.0",
         "fastify": "^5.1.0",
         "fflate": "^0.8.2",
         "minio": "^8.0.2",

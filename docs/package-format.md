@@ -109,6 +109,59 @@ Statements read the same values: `{{N.max}}` renders as `2 \cdot 10^{5}` (`{{N.m
 `{{limits.memory}}` the limits, and `{{samples}}` is replaced by the sample tests with the main
 solution's outputs. Statements are Markdown with KaTeX math.
 
+## Checkers
+
+`checker` decides whether an output is right. It takes one of three forms:
+
+| `checker` | Meaning |
+|---|---|
+| omitted | The judge's default comparison: outputs match line by line, ignoring leading and trailing whitespace of each line |
+| `{ builtin: lines }` | Lines must match, ignoring trailing spaces and trailing blank lines |
+| `{ builtin: float, eps: 1e-6 }` | Tokens match; numbers may differ by an absolute or relative error of at most `eps` |
+| `{ builtin: yesno }` | Tokens match without regard to letter case |
+| `checker.cpp` (a file) | Your own program, see the conventions below; for interactive tasks this is the interactor |
+
+Built-in checkers are generated as Python programs in the judge's checker protocol and are
+exported in the judge bundle like any other checker, so the judge needs nothing from Forge.
+The build page names the checker and validator a build used.
+
+### testlib
+
+C++ generators, validators and checkers that `#include "testlib.h"` work as they are; do not
+add the header to the package, Forge inlines it at build time and adapts testlib's entry
+points to the evaluator:
+
+- a generator's arguments (`{ gen: rand, args: "100 7" }`) reach `registerGen` as `argv`;
+- a validator reads the test from stdin and fails with testlib's message;
+- a checker gets the input, output and answer as files; `_ok` is `AC`, `_wa` and `_pe` are
+  `WA`, `quitp(x)` is `custom:partial:x` with `x` in `[0, 1]`, and `_fail` is a judge error.
+
+testlib interactors are not supported. `forge import-polygon package.zip` (or "Import from
+Polygon" in the web UI) converts a Polygon package: tools, tests, groups, solutions with their
+tags and statements, and lists what it could not carry over.
+
+## Tests
+
+```yaml
+tests:
+  - { manual: tests/tricky.in, answer: tests/tricky.ans, desc: "all numbers equal" }
+  - { gen: rand, args: "n=1000 seed={i}", count: 3, desc: "random, small" }
+```
+
+`answer` names a hand-written answer file for a manual test; without it the main solution
+produces the answer. `desc` is a note shown next to the test in builds. A build's inputs and
+answers can be downloaded as a zip from the build page.
+
+## Statements
+
+`statement/<language>.md` is Markdown with KaTeX math. `{{N.max}}`, `{{N.min}}` (append `|raw`
+to skip the `2 \cdot 10^5` formatting), `{{group.small.N.max}}`, `{{limits.time}}` and
+`{{limits.memory}}` are filled from `problem.yaml`; `{{samples}}` places every sample test and
+`{{sample.2}}` a single one, so an explanation can follow each. A placeholder that cannot be
+filled makes the build red. Images are files of the package referenced relative to the
+statement (`![](figure.png)` for `statement/figure.png`) and are exported with it. The
+Statement tab edits a statement with a live preview and prints it.
+
 ## Program conventions
 
 These follow what the current kontestis evaluator can do. Programs are single files.

@@ -169,6 +169,23 @@ program
     );
 
 program
+    .command("import-polygon <zip>")
+    .description("create a problem from a Polygon package and clone it")
+    .argument("[dir]", "target directory (default: the problem's name)")
+    .option("--workspace <id>", "workspace id")
+    .action(
+        act(async (zip: string, dir: string | undefined, opts: { workspace?: string }) => {
+            const client = makeClient();
+            const workspace = await pickWorkspace(client, opts.workspace);
+            const response = await client.raw("POST", `/workspaces/${workspace}/import/polygon`, { body: new Uint8Array(readFileSync(zip)) });
+            const created = (await response.json()) as { id: string; name: string; notes: string[] };
+            info(`imported problem ${created.name} (${created.id})`);
+            for (const note of created.notes) info(`note: ${note}`);
+            await cloneInto(client, created.id, dir ?? created.name);
+        }),
+    );
+
+program
     .command("clone <problemId> [dir]")
     .description("download a problem's working copy")
     .action(act(async (problemId: string, dir?: string) => void (await cloneInto(makeClient(), problemId, dir))));

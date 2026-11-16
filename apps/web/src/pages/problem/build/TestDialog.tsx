@@ -33,10 +33,10 @@ export const TestDialog = ({
     const selected =
         chosen && solutions.includes(chosen)
             ? chosen
-            : (solutions.find((path) => {
+            : solutions.find((path) => {
                   const verdict = output.matrix[path]?.[testId ?? ""]?.verdict;
                   return verdict !== undefined && verdict !== "AC";
-              }) ?? solutions[0]);
+              }) ?? solutions[0];
     const selectedResult = selected ? output.matrix[selected]?.[testId ?? ""] : undefined;
     return (
         <Dialog
@@ -74,20 +74,26 @@ export const TestDialog = ({
                             <ul className="flex flex-col gap-1 text-sm">
                                 {output.groups
                                     .filter((group) => group.name in test.validation)
-                                    .map((group) => [group.name, test.validation[group.name]] as const)
+                                    .map(
+                                        (group) =>
+                                            [group.name, test.validation[group.name]] as const,
+                                    )
                                     .map(([group, message]) => (
-                                    <li key={group} className="flex flex-wrap items-start gap-2">
-                                        <span className="font-mono text-xs">{group}</span>
-                                        {message === null ? (
-                                            <Badge tone="success">valid</Badge>
-                                        ) : (
-                                            <>
-                                                <Badge tone="danger">invalid</Badge>
-                                                <span className="text-danger">{message}</span>
-                                            </>
-                                        )}
-                                    </li>
-                                ))}
+                                        <li
+                                            key={group}
+                                            className="flex flex-wrap items-start gap-2"
+                                        >
+                                            <span className="font-mono text-xs">{group}</span>
+                                            {message === null ? (
+                                                <Badge tone="success">valid</Badge>
+                                            ) : (
+                                                <>
+                                                    <Badge tone="danger">invalid</Badge>
+                                                    <span className="text-danger">{message}</span>
+                                                </>
+                                            )}
+                                        </li>
+                                    ))}
                             </ul>
                         )}
                     </section>
@@ -110,7 +116,11 @@ export const TestDialog = ({
                                         return (
                                             <Tr
                                                 key={solution}
-                                                className={solution === selected ? "bg-accent-soft/40" : undefined}
+                                                className={
+                                                    solution === selected
+                                                        ? "bg-accent-soft/40"
+                                                        : undefined
+                                                }
                                             >
                                                 <Td className="font-mono text-xs">
                                                     <button
@@ -160,7 +170,10 @@ export const TestDialog = ({
                                     problemId={problemId}
                                     hash={selectedResult.outputHash}
                                     label="Output"
-                                    fileName={`${safeName}.${selected.replace(/[^A-Za-z0-9]+/g, "-")}.out`}
+                                    fileName={`${safeName}.${selected.replace(
+                                        /[^A-Za-z0-9]+/g,
+                                        "-",
+                                    )}.out`}
                                 />
                             ) : (
                                 <p className="text-sm text-muted">

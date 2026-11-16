@@ -8,10 +8,10 @@ import { CheckRequest, Program, Runner, RunOutcome, RunRequest, RunResult } from
 
 type Executed = { code: number | null; stdout: string; stderr: string; timeMs: number; timedOut: boolean };
 
-const execute = (command: string, args: string[], stdin: string, timeoutMs: number): Promise<Executed> =>
+const execute = (command: string, args: string[], stdin: string, timeoutMs: number, cwd?: string): Promise<Executed> =>
     new Promise((resolve) => {
         const started = process.hrtime.bigint();
-        const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
         const out: Buffer[] = [];
         const err: Buffer[] = [];
         let timedOut = false;
@@ -116,10 +116,11 @@ const verdictOf = (text: string): Pick<RunOutcome, "status" | "data" | "message"
     return { status: "judge_error", message: `the checker printed "${text.slice(0, 100)}"` };
 };
 
-const runChecker = async (checker: { command: string; args: string[] }, stdin: string, expected: string, output: string) => {
+/** Programs run inside the job's scratch directory: checkers may write files next to themselves. */
+const runChecker = async (checker: { command: string; args: string[] }, stdin: string, expected: string, output: string, cwd: string) => {
     const separator = `[${randomBytes(16).toString("hex")}]\n`;
     const checkerInput = `${separator}${stdin}\n${separator}${expected}\n${separator}${output}\n${separator}`;
-    const checked = await execute(checker.command, checker.args, checkerInput, 30_000);
+    const checked = await execute(checker.command, checker.args, checkerInput, 30_000, cwd);
     if (checked.code !== 0) return { status: "judge_error" as const, message: "the checker crashed" };
     return verdictOf(checked.stdout.trim());
 };
@@ -165,7 +166,7 @@ export class LocalRunner implements Runner {
                     else runs.push({ ...base, ...verdictOf(result.verdict) });
                     continue;
                 }
-                const result = await execute(program.command, program.args, input.stdin, request.timeLimitMs);
+                const result = await execute(program.command, program.args, input.stdin, request.timeLimitMs, directory);
                 const base = { id: input.id, timeMs: result.timeMs, memoryKb: 0 };
                 if (result.timedOut) {
                     runs.push({ ...base, status: "time_limit_exceeded" });
@@ -186,7 +187,7 @@ export class LocalRunner implements Runner {
                 }
                 runs.push({
                     ...base,
-                    ...(await runChecker(checker as { command: string; args: string[] }, input.stdin, input.expected ?? "", result.stdout)),
+                    ...(await runChecker(checker as { command: string; args: string[] }, input.stdin, input.expected ?? "", result.stdout, directory)),
                     stdout: result.stdout,
                 });
             }
@@ -208,7 +209,7 @@ export class LocalRunner implements Runner {
             for (const input of request.inputs) {
                 const base = { id: input.id, timeMs: 0, memoryKb: 0 };
                 if (checker && "command" in checker)
-                    runs.push({ ...base, ...(await runChecker(checker, input.stdin, input.expected, input.output)) });
+                    runs.push({ ...base, ...(await runChecker(checker, input.stdin, input.expected, input.output, directory)) });
                 else runs.push({ ...base, status: tokens(input.output) === tokens(input.expected) ? "accepted" : "wrong_answer" });
             }
             return { runs };

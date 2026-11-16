@@ -49,18 +49,12 @@ const BuildTools = ({ output }: { output: BuildOutput }) => {
                 ? item(interactive ? "interactor" : "checker", output.checker)
                 : item(
                       interactive ? "interactor" : "checker",
-                      interactive
-                          ? "none"
-                          : "compares output with the judge's default comparison",
+                      interactive ? "none" : "compares output with the judge's default comparison",
                       false,
                   )}
             {item("validator", output.validator ?? "none")}
             {output.limits &&
-                item(
-                    "limits",
-                    `${output.limits.time_ms} ms, ${output.limits.memory_mb} MB`,
-                    false,
-                )}
+                item("limits", `${output.limits.time_ms} ms, ${output.limits.memory_mb} MB`, false)}
         </div>
     );
 };
@@ -156,8 +150,8 @@ export const BuildDetail = ({
                     {revision
                         ? `revision ${revision.number}`
                         : data.revisionId
-                          ? "revision"
-                          : "working copy"}
+                        ? "revision"
+                        : "working copy"}
                     {data.params?.remeasure ? " · re-measure" : ""} · started{" "}
                     {formatDate(data.startedAt ?? data.createdAt)} ·{" "}
                     {formatDuration(data.startedAt, data.finishedAt)}
@@ -216,8 +210,8 @@ export const BuildDetail = ({
             {active && health.data?.runner.alive === false && (
                 <Notice tone="warning">
                     No evaluator is answering on queue{" "}
-                    <span className="font-mono">{health.data.runner.pool}</span>, so the build
-                    will wait until one starts.
+                    <span className="font-mono">{health.data.runner.pool}</span>, so the build will
+                    wait until one starts.
                 </Notice>
             )}
 
@@ -227,9 +221,9 @@ export const BuildDetail = ({
                         <span>
                             {data.status === "queued"
                                 ? "Waiting for a runner"
-                                : (PHASES[data.progress?.phase ?? ""] ??
+                                : PHASES[data.progress?.phase ?? ""] ??
                                   data.progress?.phase ??
-                                  "Starting")}
+                                  "Starting"}
                         </span>
                         {data.progress && data.progress.total > 0 && (
                             <span className="font-mono text-xs text-muted">
@@ -240,7 +234,7 @@ export const BuildDetail = ({
                     <Progress
                         label="Build progress"
                         done={data.progress?.done ?? 0}
-                        total={data.status === "queued" ? 0 : (data.progress?.total ?? 0)}
+                        total={data.status === "queued" ? 0 : data.progress?.total ?? 0}
                     />
                 </div>
             )}
@@ -310,11 +304,11 @@ export const BuildDetail = ({
                                     </p>
                                 </Card>
                             ) : (
-                            <CalibrationCard
-                                calibration={report.calibration}
-                                hardwareClass={output.runner.hardwareClass}
-                                referenceClass={problem.workspace.referenceClass}
-                            />
+                                <CalibrationCard
+                                    calibration={report.calibration}
+                                    hardwareClass={output.runner.hardwareClass}
+                                    referenceClass={problem.workspace.referenceClass}
+                                />
                             )}
                             <KillCard
                                 kills={report.kills}

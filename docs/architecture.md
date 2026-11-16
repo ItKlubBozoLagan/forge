@@ -76,6 +76,14 @@ sends, and drops messages it cannot parse without answering. Its `feat/string-ev
 branch takes strings instead. `EVALUATOR_ID_FORMAT` selects `number` or `string`; the default
 `auto` sends one probe of each form with the first job and keeps the one that is answered.
 
+One message carries at most 64 tests, 6 MB of data and four minutes of worst-case run time
+(tests × measurement limit); larger work is split. A job's timeout is `RUNNER_JOB_TIMEOUT_MS`
+for waiting in the queue plus its own worst-case run time. A cancelled build stops sending
+work; jobs already on the runner finish.
+
+A run's time is the median of its samples on the build's hardware class once it has more than
+one, so re-measuring steadies a borderline verdict.
+
 ### What the current evaluator protocol limits
 
 - Test data travels inline in the message, so batches are split and very large tests are slow.

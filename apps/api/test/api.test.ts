@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from "node:http";
 import { AddressInfo } from "node:net";
 
-import { unzipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { Scheduler } from "../src/runner/scheduler";
@@ -446,6 +446,83 @@ describe("package handling", () => {
         expect(preview.body.markdown).toContain("### Sample 1");
         expect(preview.body.unresolved).toEqual(["K.typo", "sample.7"]);
     });
+});
+
+describe("polygon import", () => {
+    it("imports a Polygon package and builds it with its own testlib tools", async () => {
+        const text = (value: string) => new Uint8Array(Buffer.from(value));
+        const archive = zipSync({
+            "problem.xml": text(`<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<problem revision="7" short-name="double-it" url="https://polygon.example/p/double-it">
+    <names><name language="english" value="Double It"/></names>
+    <statements><statement charset="UTF-8" language="english" path="statements/english/problem.tex" type="application/x-tex"/></statements>
+    <judging cpu-name="x" cpu-speed="3600" input-file="" output-file="" run-count="1">
+        <testset name="tests">
+            <time-limit>2000</time-limit>
+            <memory-limit>268435456</memory-limit>
+            <test-count>4</test-count>
+            <input-path-pattern>tests/%02d</input-path-pattern>
+            <answer-path-pattern>tests/%02d.a</answer-path-pattern>
+            <tests>
+                <test method="manual" sample="true"/>
+                <test cmd="gen 100 1" method="generated"/>
+                <test cmd="gen 100 2" method="generated"/>
+                <test cmd="lost 5" method="generated"/>
+            </tests>
+        </testset>
+    </judging>
+    <files>
+        <resources><file path="files/testlib.h" type="h.g++"/></resources>
+        <executables>
+            <executable><source path="files/gen.cpp" type="cpp.g++17"/></executable>
+        </executables>
+    </files>
+    <assets>
+        <checker name="std::ncmp.cpp" type="testlib"><source path="files/check.cpp" type="cpp.g++17"/></checker>
+        <validators><validator><source path="files/validator.cpp" type="cpp.g++17"/></validator></validators>
+        <solutions>
+            <solution tag="main"><source path="solutions/sol.cpp" type="cpp.g++17"/></solution>
+            <solution tag="wrong-answer"><source path="solutions/wrong.py" type="python.3"/></solution>
+            <solution tag="time-limit-exceeded-or-accepted"><source path="solutions/maybe.py" type="python.3"/></solution>
+        </solutions>
+    </assets>
+</problem>`),
+            "files/gen.cpp": text(`#include "testlib.h"\n#include <cstdlib>\nint main(int argc, char* argv[]) {\n    registerGen(argc, argv, 1);\n    println(rnd.next(1, atoi(argv[1])));\n}\n`),
+            "files/validator.cpp": text(`#include "testlib.h"\nint main(int argc, char* argv[]) {\n    registerValidation(argc, argv);\n    inf.readInt(1, 1000, "n");\n    inf.readEoln();\n    inf.readEof();\n}\n`),
+            "files/check.cpp": text(`#include "testlib.h"\nint main(int argc, char* argv[]) {\n    registerTestlibCmd(argc, argv);\n    long long expected = ans.readLong(), found = ouf.readLong();\n    if (expected != found) quitf(_wa, "expected %lld, found %lld", expected, found);\n    quitf(_ok, "ok");\n}\n`),
+            "files/testlib.h": text("// the real header is provided by Forge\n"),
+            "solutions/sol.cpp": text(`#include <cstdio>\nint main() { int n; scanf("%d", &n); printf("%d\\n", 2 * n); }\n`),
+            "solutions/wrong.py": text("print(int(input()) + 2)\n"),
+            "solutions/maybe.py": text("print(int(input()) * 2)\n"),
+            "tests/01": text("2\n"),
+            "statements/english/problem-properties.json": text(JSON.stringify({ name: "Double It", legend: "Given $n$, print \\textbf{twice} $n$.", input: "One integer $n$.", output: "One integer." })),
+        });
+        const imported = await ana.post(`/workspaces/${ana.workspaceId}/import/polygon`, Buffer.from(archive));
+        expect(imported.status).toBe(200);
+        expect(imported.body).toMatchObject({ name: "double-it", title: "Double It" });
+        const notes = imported.body.notes.join("\n");
+        expect(notes).toContain('"lost 5"');
+        expect(notes).toContain("time-limit-exceeded-or-accepted");
+        const id = imported.body.id;
+        expect(await readFile(ana, id, "statement/en.md")).toContain("print **twice** $n$");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        expect(manifest).toContain("checker: checker.cpp");
+        expect(manifest).toContain("args: 100 1");
+
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.tests.map((test: any) => test.id)).toEqual(["samples/1", "tests/1", "tests/2"]);
+        const byPath = Object.fromEntries(result.output.report.solutions.map((solution: any) => [solution.path, solution]));
+        expect(byPath["solutions/sol.cpp"].score).toBe(1);
+        // n + 2 equals 2n only for the sample (n = 2)
+        expect(byPath["solutions/wrong.py"].groups.map((group: any) => group.summary)).toEqual(["AC", "WA"]);
+
+        // importing it again does not collide
+        const again = await ana.post(`/workspaces/${ana.workspaceId}/import/polygon`, Buffer.from(archive));
+        expect(again.body.name).toBe("double-it-2");
+        expect((await ana.post(`/workspaces/${ana.workspaceId}/import/polygon`, Buffer.from("not a zip"))).status).toBe(400);
+    }, 180_000);
 });
 
 describe("working copy", () => {

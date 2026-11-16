@@ -1,9 +1,10 @@
 import { TEMPLATE_FORMATS, templateFiles } from "@forge/core";
 import { FastifyInstance } from "fastify";
-import { zipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import { z } from "zod";
 
 import { App } from "../app";
+import { importPolygon } from "../polygon";
 import { Tree } from "../blobs";
 import { audit, badRequest, can, conflict, currentUser, notFound, ProblemRow, requireProblem, requireWorkspace } from "../http";
 
@@ -109,6 +110,40 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         await app.sql`insert into problem_access (problem_id, user_id, role) values (${problem!.id}, ${user.id}, 'owner')`;
         await audit(app, { workspaceId: id, problemId: problem!.id, userId: user.id, action: "problem.create", detail: { name: body.data.name, template: body.data.template } });
         return { id: problem!.id, name: body.data.name, title: body.data.title };
+    });
+
+    /** Creates a problem from a Polygon package: the zip Polygon offers for download. */
+    server.post("/workspaces/:id/import/polygon", { bodyLimit: 256 * 1024 * 1024 }, async (req) => {
+        const user = await currentUser(app, req);
+        const { id } = req.params as { id: string };
+        await requireWorkspace(app, user.id, id);
+        if (!Buffer.isBuffer(req.body)) throw badRequest("Send the Polygon package as application/octet-stream");
+        let imported;
+        try {
+            imported = importPolygon(unzipSync(new Uint8Array(req.body)));
+        } catch (error) {
+            throw badRequest(`The package could not be imported: ${(error as Error).message}`);
+        }
+        // a second import of the same problem gets a numbered name
+        let name = imported.name;
+        for (let attempt = 2; (await app.sql`select 1 from problems where workspace_id = ${id} and name = ${name}`).length > 0; attempt++)
+            name = `${imported.name.slice(0, 56)}-${attempt}`;
+        const tree: Tree = {};
+        const skipped: string[] = [];
+        for (const [path, content] of Object.entries(imported.files)) {
+            if (content.length > app.config.maxFileBytes) {
+                skipped.push(`${path} is larger than the file size limit and was not imported.`);
+                continue;
+            }
+            const data = path === "problem.yaml" && name !== imported.name ? Buffer.from(Buffer.from(content).toString("utf8").replace(`name: ${imported.name}`, `name: ${name}`)) : Buffer.from(content);
+            tree[path] = await app.blobs.put(id, data);
+        }
+        const [problem] = await app.sql<{ id: string }[]>`
+            insert into problems (workspace_id, name, title, draft_tree, created_by)
+            values (${id}, ${name}, ${imported.title.slice(0, 120)}, ${app.sql.json(tree as never)}, ${user.id}) returning id`;
+        await app.sql`insert into problem_access (problem_id, user_id, role) values (${problem!.id}, ${user.id}, 'owner')`;
+        await audit(app, { workspaceId: id, problemId: problem!.id, userId: user.id, action: "problem.import", detail: { name, from: "polygon" } });
+        return { id: problem!.id, name, title: imported.title, notes: [...imported.notes, ...skipped] };
     });
 
     server.get("/problems/:id", async (req) => {

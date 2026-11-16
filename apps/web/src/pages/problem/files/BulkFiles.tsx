@@ -1,8 +1,10 @@
+import { MANIFEST_PATH, removeReferences } from "@forge/core";
 import { Download } from "lucide-react";
 import { DragEvent, useCallback, useRef, useState } from "react";
 
 import { archiveUrl, downloadFrom, syncChanges } from "../../../lib/files";
 import { plural } from "../../../lib/format";
+import { manifestChange } from "../../../lib/manifest";
 import type { TreeFile } from "../../../lib/types";
 import { Button, ButtonSize } from "../../../ui/Button";
 import { ConfirmDialog } from "../../../ui/Dialog";
@@ -108,14 +110,20 @@ export const useBulkFiles = ({
                 danger
                 onConfirm={async () => {
                     const paths = folderFiles.map((file) => file.path);
-                    await syncChanges(
-                        problemId,
-                        folderFiles.map((file) => ({
+                    // problem.yaml stops referring to the folder in the same atomic change
+                    const manifest = folderFiles.some((file) => file.path === MANIFEST_PATH)
+                        ? undefined
+                        : await manifestChange(problemId, true, (text) =>
+                              removeReferences(text, folder ?? ""),
+                          ).catch(() => undefined);
+                    await syncChanges(problemId, [
+                        ...folderFiles.map((file) => ({
                             path: file.path,
                             base: file.hash,
                             hash: null,
                         })),
-                    );
+                        ...(manifest ? [manifest.change] : []),
+                    ]);
                     await onApplied(paths, true);
                     toast.success(`Deleted ${folder}/ (${plural(paths.length, "file")})`);
                 }}

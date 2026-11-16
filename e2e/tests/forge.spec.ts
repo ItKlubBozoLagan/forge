@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { AddressInfo } from "node:net";
 
 import { expect, test } from "@playwright/test";
+import { zipSync } from "fflate";
 
 import { build, createProblem, openFile, readFile, replaceEditorContent, signIn } from "./helpers";
 
@@ -326,4 +327,54 @@ test("retitles and deletes a problem from its settings", async ({ page }) => {
     await expect(page).toHaveURL(/\/w\/\d+$/);
     await expect(page.getByRole("button", { name: "New problem" }).first()).toBeVisible();
     await expect(page.getByText("Throwaway Renamed")).toHaveCount(0);
+});
+
+test("imports a Polygon package and builds it with its testlib tools", async ({ page }) => {
+    const text = (value: string) => new Uint8Array(Buffer.from(value));
+    const archive = zipSync({
+        "problem.xml": text(`<?xml version="1.0" encoding="utf-8"?>
+<problem revision="3" short-name="triple-it">
+    <names><name language="english" value="Triple It"/></names>
+    <judging>
+        <testset name="tests">
+            <time-limit>2000</time-limit>
+            <memory-limit>268435456</memory-limit>
+            <input-path-pattern>tests/%02d</input-path-pattern>
+            <tests>
+                <test method="manual" sample="true"/>
+                <test cmd="gen 100 1" method="generated"/>
+                <test cmd="gone 1" method="generated"/>
+            </tests>
+        </testset>
+    </judging>
+    <files><executables><executable><source path="files/gen.cpp" type="cpp.g++17"/></executable></executables></files>
+    <assets>
+        <checker name="std::ncmp.cpp" type="testlib"><source path="files/check.cpp" type="cpp.g++17"/></checker>
+        <solutions>
+            <solution tag="main"><source path="solutions/sol.py" type="python.3"/></solution>
+            <solution tag="wrong-answer"><source path="solutions/wrong.py" type="python.3"/></solution>
+        </solutions>
+    </assets>
+</problem>`),
+        "files/gen.cpp": text(`#include "testlib.h"\n#include <cstdlib>\nint main(int argc, char* argv[]) {\n    registerGen(argc, argv, 1);\n    println(rnd.next(2, atoi(argv[1])));\n}\n`),
+        "files/check.cpp": text(`#include "testlib.h"\nint main(int argc, char* argv[]) {\n    registerTestlibCmd(argc, argv);\n    int expected = ans.readInt(), found = ouf.readInt();\n    if (expected != found) quitf(_wa, "expected %d, found %d", expected, found);\n    quitf(_ok, "ok");\n}\n`),
+        "solutions/sol.py": text("print(int(input()) * 3)\n"),
+        "solutions/wrong.py": text("print(int(input()) + 2)\n"),
+        "tests/01": text("1\n"),
+        "statements/english/problem-properties.json": text(JSON.stringify({ name: "Triple It", legend: "Print \\textbf{three times} $n$.", input: "One integer.", output: "One integer." })),
+    });
+
+    await signIn(page, "Ana");
+    await page.getByTestId("polygon-file").first().setInputFiles({ name: "triple-it.zip", mimeType: "application/zip", buffer: Buffer.from(archive) });
+    // the generator of the third test is not in the package, and the import says so
+    await expect(page.getByTestId("import-notes")).toContainText('"gone 1"');
+    await page.getByRole("button", { name: "Open problem" }).click();
+    await expect(page).toHaveURL(/\/p\/\d+\//);
+    await expect(page.getByTestId("file-checker.cpp")).toBeVisible();
+    await expect(page.getByTestId("file-generators/gen.cpp")).toBeVisible();
+
+    await build(page, "green");
+    await expect(page.getByTestId("build-tools")).toContainText("checker.cpp");
+    await expect(page.getByTestId("cell-solutions/sol.py-tests/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/wrong.py-tests/1")).toContainText("WA");
 });

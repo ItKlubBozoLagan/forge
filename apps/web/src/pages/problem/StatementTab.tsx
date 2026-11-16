@@ -31,7 +31,7 @@ const PLACEHOLDER_HINT = (
  * starts with the statement's folder (`statement/figure.png`) is taken as a package path,
  * anything else as relative to the statement file. Absolute URLs are left alone.
  */
-const statementUrl =(problemId: string, statementPath: string | undefined) => {
+const statementUrl = (problemId: string, statementPath: string | undefined) => {
     const dir = statementPath?.includes("/")
         ? statementPath.slice(0, statementPath.lastIndexOf("/"))
         : "";
@@ -329,8 +329,8 @@ export const StatementTab = () => {
             {conflict && draft && (
                 <Notice tone="warning" className="flex flex-wrap items-center gap-2 print:hidden">
                     <span className="flex-1">
-                        <span className="font-mono">{draft.path}</span> was changed by someone
-                        else since you opened it.
+                        <span className="font-mono">{draft.path}</span> was changed by someone else
+                        since you opened it.
                     </span>
                     <Button size="sm" variant="danger" onClick={() => void save(true)}>
                         Overwrite with mine
@@ -396,7 +396,9 @@ export const StatementTab = () => {
                         <PrintHeader title={problem.title} limits={data.limits} />
                         {article}
                         {preview.isFetching && (
-                            <span className="text-xs text-muted print:hidden">Updating preview</span>
+                            <span className="text-xs text-muted print:hidden">
+                                Updating preview
+                            </span>
                         )}
                         {preview.error && (
                             <ErrorNotice error={preview.error} className="print:hidden" />

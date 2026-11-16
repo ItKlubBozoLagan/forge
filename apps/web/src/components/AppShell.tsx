@@ -1,13 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Hammer, KeyRound, LogOut } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Hammer, KeyRound, LogOut, Plus } from "lucide-react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 
 import { api, ApiError } from "../lib/api";
-import { useMe } from "../lib/queries";
+import { keys, useMe } from "../lib/queries";
+import type { Workspace } from "../lib/types";
 import { useWorkspaceState } from "../lib/workspace";
 import { Button } from "../ui/Button";
 import { cx } from "../ui/cx";
+import { Dialog } from "../ui/Dialog";
+import { Field, Input } from "../ui/Field";
 import { ErrorNotice, Loading } from "../ui/misc";
 import { useToast } from "../ui/Toast";
 
@@ -41,11 +44,98 @@ export const HomeRedirect = () => {
     const target = workspaces.find((workspace) => workspace.id === current) ?? workspaces[0];
     if (!target)
         return (
-            <div className="mx-auto max-w-lg p-6 text-center text-muted">
-                You are not a member of any workspace yet. Ask a workspace owner to add you.
+            <div className="mx-auto flex max-w-lg flex-col items-center gap-3 p-6 text-center text-muted">
+                You are not a member of any workspace yet. Ask a workspace owner to add you, or
+                create your own.
+                <NewWorkspaceButton />
             </div>
         );
     return <Navigate to={`/w/${target.id}`} replace />;
+};
+
+/** A button that opens a small dialog to create a workspace, then goes to it. */
+const NewWorkspaceButton = ({ compact }: { compact?: boolean }) => {
+    const [open, setOpen] = useState(false);
+    const [name, setName] = useState("");
+    const [pending, setPending] = useState(false);
+    const [error, setError] = useState<unknown>();
+    const queryClient = useQueryClient();
+    const navigate = useNavigate();
+    const { setCurrent } = useWorkspaceState();
+
+    const close = () => {
+        setOpen(false);
+        setName("");
+        setError(undefined);
+    };
+
+    const submit = async (event: FormEvent) => {
+        event.preventDefault();
+        setPending(true);
+        setError(undefined);
+        try {
+            const created = await api.post<Pick<Workspace, "id" | "name" | "role">>("/workspaces", {
+                name: name.trim(),
+            });
+            await queryClient.invalidateQueries({ queryKey: keys.me });
+            setCurrent(created.id);
+            close();
+            navigate(`/w/${created.id}`);
+        } catch (caught) {
+            setError(caught);
+        } finally {
+            setPending(false);
+        }
+    };
+
+    return (
+        <>
+            <Button
+                size="sm"
+                variant={compact ? "ghost" : "secondary"}
+                icon={<Plus className="size-3.5" />}
+                aria-label={compact ? "New workspace" : undefined}
+                title="Create a workspace"
+                onClick={() => setOpen(true)}
+            >
+                {compact ? undefined : "New workspace"}
+            </Button>
+            <Dialog
+                open={open}
+                onClose={close}
+                title="New workspace"
+                description="A workspace holds problems, problem sets and their members. You become its owner."
+            >
+                <form onSubmit={submit} className="flex flex-col gap-3">
+                    <Field label="Workspace name">
+                        {(id) => (
+                            <Input
+                                id={id}
+                                value={name}
+                                required
+                                maxLength={80}
+                                autoFocus
+                                placeholder="Regional olympiad 2027"
+                                onChange={(event) => setName(event.target.value)}
+                            />
+                        )}
+                    </Field>
+                    {error !== undefined && <ErrorNotice error={error} />}
+                    <div className="flex justify-end gap-2 pt-1">
+                        <Button onClick={close}>Cancel</Button>
+                        <Button
+                            type="submit"
+                            variant="primary"
+                            pending={pending}
+                            disabled={!name.trim()}
+                        >
+                            Create workspace
+                        </Button>
+                    </div>
+                </form>
+            </Dialog>
+        </>
+    );
 };
 
 const UserMenu = () => {
@@ -192,6 +282,7 @@ export const AppShell = () => {
                             </select>
                         </>
                     )}
+                    <NewWorkspaceButton compact={workspaces.length > 0} />
                     <nav
                         aria-label="Main"
                         className="order-last flex w-full gap-1 overflow-x-auto md:order-none md:w-auto"

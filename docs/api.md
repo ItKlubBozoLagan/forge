@@ -70,6 +70,14 @@ author), *manage* (owner). Testers are blind: they cannot read files, builds or 
 `sync` applies all changes atomically. `base` is the hash the client last saw (`null` = did not
 exist); `hash: null` deletes. Contents must be uploaded with `POST /blobs` first.
 
+`GET /problems/:id/archive` (optional `?revision=`) returns the package as a zip.
+`GET /problems/:id/blobs/:hash` serves content that belongs to the problem: files of its working
+copy and revisions, what its builds produced, and what was uploaded for it through
+`POST /problems/:id/blobs`. `sync` accepts the same set of hashes.
+
+`POST /workspaces/:id/import/polygon` takes a Polygon package (zip, `application/octet-stream`,
+up to 256 MB) and returns `{ id, name, title, notes }`.
+
 ### Revisions
 
 | Method | Path | Body | Returns |
@@ -135,6 +143,19 @@ single ad-hoc solution. Blind testers get a redacted output for their own invoca
   invalid: [{ args, message }],   // generated tests the validator rejected
   errors: string[] }
 ```
+
+More build routes:
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/problems/:id/builds` | `{ revision?, remeasure?, clean? }` | `clean` ignores every cached step |
+| POST | `/builds/:id/cancel` | | Stops a queued or running build; it ends `failed` with `error: "Cancelled by <name>"` (409 once finished) |
+| GET | `/builds/:id/tests.zip` | | Inputs and answers as `<group>/<index>.in` / `.out` |
+| POST | `/problems/:id/statement/preview` | `{ markdown }` | `{ markdown, unresolved, samplesBuilt }` rendered against the working copy |
+| GET | `/health?runner=1` | | Adds `runner.alive`: whether the runner answered a probe |
+
+`POST /problems/:id/invocations` runs against the working copy unless `revision` is given
+(blind testers always run against the latest revision).
 
 ## Review
 

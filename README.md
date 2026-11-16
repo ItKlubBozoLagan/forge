@@ -102,40 +102,32 @@ every run.
 ## Status
 
 Working end to end: packages, builds, revisions, stress testing, invocations, review, access
-control, problem sets and judge bundle export, OAuth sign-in, web UI and CLI.
+control, problem sets and judge bundle export, Polygon import, OAuth sign-in, web UI and CLI.
 
-Not done yet:
+Not done, and why:
 
-- **Runner protocol.** Forge speaks the evaluator's current protocol, so it builds every task
-  type kontestis judges today: batch (token comparison or a checker), interactive and
-  output-only. Communication and grader tasks can be described but not built; they need
-  multi-process runs and multi-file compilation in the evaluator. See
-  [architecture.md](docs/architecture.md#the-runner).
-- **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Forge
-  can express things kontestis cannot score today: `aggregate: sum`, group `depends`,
-  fractional points, binary scoring and output-only groups with several tests. Nothing warns
-  about them yet.
-- **Editing the manifest.** `problem.yaml` is edited as text with live validation; there are no
-  forms for tests, groups, solutions or expectations, and renaming a file does not update
-  references to it.
-- **Bulk files.** Files are uploaded one at a time (16 MB each); there is no zip upload and no
-  download of a package or of its generated tests as an archive.
-- **Long jobs.** A runner job that takes more than `RUNNER_JOB_TIMEOUT_MS` (15 minutes,
-  counted from when it is queued) is reported as a judge error, and builds cannot be cancelled.
-  Up to 64 tests go in one job at three times the time limit, so slow solutions on large
-  groups with limits near 5 s can hit this.
-- **Timing.** Verdicts and calibration use the latest measurement of a run, not a statistic
-  over its samples, and there is no rebuild that ignores the cache of generators and answers.
-- **Large tests.** Test data is held in memory as text and sent inline to the evaluator; sets
-  of hundreds of megabytes are untested and binary tests are not supported.
-- **Revisions and review.** Revisions can be restored but not browsed or compared, and review
-  comments are not anchored in the editor.
-- **Checkers.** No built-in checkers beyond token comparison (no float tolerance), no testlib
-  compatibility, no hand-written answer files for manual tests, no import from Polygon.
+- **Communication and grader tasks.** They can be described but not built. The evaluator runs
+  one single-file program per submission; these need several contestant processes or
+  multi-file compilation, which is a change to the evaluator
+  ([architecture.md](docs/architecture.md#the-runner)).
+- **testlib interactors.** testlib generators, validators and checkers work. Interactors must
+  follow Forge's interactor protocol, because the evaluator hands the test to the interactor on
+  the same stream as the solution's output.
 - **Checker messages.** The evaluator discards what a checker prints to stderr, so a wrong
-  answer has no explanation beyond the solution's output.
+  answer shows the solution's output and the answer, but not the checker's comment.
+- **Binary and very large tests.** Test data travels to the evaluator inline as JSON text, so
+  tests must be UTF-8 text, and sets of hundreds of megabytes are untested.
+- **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Set
+  `judge: kontestis` in `problem.yaml` to be warned about what kontestis cannot score today
+  (summed groups, group dependencies, fractional points, binary scoring, output-only groups
+  with several tests).
+- **Polygon import** was tested on packages written for the tests, not on a package downloaded
+  from Polygon. It does not import solutions tagged "time-limit-exceeded-or-accepted" or
+  testlib interactors, and statements are converted from TeX only roughly.
 - **Reference hardware.** Builds warn when measured off the reference class but do not block a
   green result on it.
 - **One working copy per problem.** Authors share it, with conflict detection per file; there
-  are no per-author branches.
+  are no per-author branches. Review comments keep their line number when the file changes.
+- **One API process.** Builds are run by the API process itself; on start it re-queues builds
+  that were running, so a second API process against the same database is not supported.
 - **Deployment.** No production deployment configuration.
