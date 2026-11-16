@@ -39,7 +39,7 @@ const tabsFor = (problem: Problem) => {
         { to: `${base}/stress`, label: "Stress", key: "stress" },
         { to: `${base}/invocations`, label: "Invocations", key: "invocations" },
         { to: `${base}/review`, label: "Review", key: "review" },
-        { to: `${base}/access`, label: "Access", key: "access" },
+        { to: `${base}/access`, label: "Access & settings", key: "access" },
     ];
     return problem.role === "tester" ? all.filter((tab) => TESTER_TABS.includes(tab.key)) : all;
 };

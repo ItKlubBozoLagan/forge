@@ -158,6 +158,13 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 files[`${base}${name}`] = strToU8(withPrelude(program.source, program.language, plan.manifest.constraints));
                 checker = { path: name, language: program.language };
             }
+            // kontestis stores a reference solution with every problem
+            let solution = null;
+            if (plan.main?.language) {
+                const name = `solution.${plan.main.path.split(".").pop()}`;
+                files[`${base}${name}`] = await read(tree[plan.main.path]!.hash);
+                solution = { path: name, language: plan.main.language };
+            }
             const title = plan.manifest.title;
             const description = {
                 label: entry.label,
@@ -168,6 +175,8 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 limits: plan.manifest.limits,
                 scoring: plan.manifest.scoring.mode,
                 checker: checker ?? null,
+                solution,
+                titles: typeof title === "string" || !title ? {} : title,
                 groups: plan.groups.map((group) => ({
                     name: group.name,
                     points: group.points,

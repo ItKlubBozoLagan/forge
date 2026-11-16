@@ -150,7 +150,7 @@ const InvocationForm = ({ onStarted }: { onStarted: (id: string) => void }) => {
                 </Button>
                 <span className="text-xs text-muted">
                     {can(problem.role, "read")
-                        ? "Runs against the latest revision (or the working copy if nothing is committed)."
+                        ? "Runs against the working copy as it is now, including uncommitted changes."
                         : "Runs against the latest revision. You see the outcome per group, not the tests."}
                 </span>
             </div>

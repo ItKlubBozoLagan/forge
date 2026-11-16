@@ -395,7 +395,7 @@ const StressResult = ({ runId }: { runId: string }) => {
                                                             size="sm"
                                                             onClick={() => setViewing(failure)}
                                                         >
-                                                            View input
+                                                            View test
                                                         </Button>
                                                         {writable &&
                                                             (promoted.has(failure.args) ? (
@@ -480,6 +480,22 @@ const StressResult = ({ runId }: { runId: string }) => {
                         size={viewing.inputSize}
                         label="Input"
                         fileName="stress.in"
+                    />
+                )}
+                {viewing?.outputHash && (
+                    <BlobPreview
+                        problemId={problem.id}
+                        hash={viewing.outputHash}
+                        label="Output of the tested solution"
+                        fileName="stress.out"
+                    />
+                )}
+                {viewing?.answerHash && (
+                    <BlobPreview
+                        problemId={problem.id}
+                        hash={viewing.answerHash}
+                        label="Answer of the main solution"
+                        fileName="stress.ans"
                     />
                 )}
             </Dialog>

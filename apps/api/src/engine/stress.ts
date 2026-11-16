@@ -1,6 +1,9 @@
 import { judge, withPrelude } from "@forge/core";
 
+import { sha256 } from "../blobs";
 import { Engine } from "./engine";
+
+const EMPTY_HASH = sha256(Buffer.alloc(0));
 
 export type StressParams = {
     generator: string;
@@ -17,7 +20,7 @@ export type StressParams = {
 export type StressOutput = {
     total: number;
     passed: number;
-    failures: Array<{ args: string; verdict: string; message?: string; inputHash: string; inputSize: number; timeMs: number }>;
+    failures: Array<{ args: string; verdict: string; message?: string; inputHash: string; inputSize: number; timeMs: number; answerHash?: string; outputHash?: string }>;
     /** Generated tests the validator rejected: bugs in the generator, not in the solution. */
     invalid: Array<{ args: string; message: string }>;
     errors: string[];
@@ -70,10 +73,15 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
     }
 
     const limits = plan.manifest.limits;
-    const answers = await engine.answers(await engine.program(plan.main.path), limits, valid);
+    // the interactor judges an interactive task on its own; there is no reference answer to make
+    const answers =
+        plan.manifest.type === "interactive"
+            ? new Map(valid.map((input) => [input.id, { hash: EMPTY_HASH }] as const))
+            : await engine.answers(await engine.program(plan.main.path), limits, valid);
+    if (plan.manifest.type === "interactive") await engine.putEmpty();
     const tests = [];
     for (const input of valid) {
-        const answer = answers.get(input.id);
+        const answer: { hash: string } | { error: string } | undefined = answers.get(input.id);
         if (!answer || "error" in answer)
             output.failures.push({
                 args: input.id,
@@ -110,6 +118,8 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
                 inputHash: test.inputHash,
                 inputSize: test.inputSize,
                 timeMs: result.timeMs,
+                answerHash: plan.manifest.type === "interactive" ? undefined : test.answerHash,
+                outputHash: result.outputHash,
             });
     }
     return output;

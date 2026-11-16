@@ -12,6 +12,7 @@ import { Card, EmptyState, ErrorNotice, Loading, Notice } from "../../ui/misc";
 import { Table, TableWrap, Td, Th, Tr } from "../../ui/Table";
 import { useToast } from "../../ui/Toast";
 import { useProblemContext } from "./ProblemLayout";
+import { ProblemSettings } from "./ProblemSettings";
 
 const ROLES: Array<{ role: ProblemRole; description: string }> = [
     {
@@ -221,6 +222,7 @@ export const AccessTab = () => {
                         </p>
                     </form>
                 )}
+                <ProblemSettings problem={problem} />
             </div>
             <ConfirmDialog
                 open={!!removing}

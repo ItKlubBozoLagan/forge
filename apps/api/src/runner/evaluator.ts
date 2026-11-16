@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 
 import { createClient } from "redis";
 
@@ -25,6 +25,8 @@ const MAX_CHUNK_BYTES = 6 * 1024 * 1024;
 const MAX_CHUNK_TESTS = 64;
 const CHECK_CONCURRENCY = 8;
 
+const PROBE_TIMEOUT_MS = 30_000;
+
 const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
 
 /** Runs programs on kontestis evaluator instances through their existing Redis protocol. */
@@ -36,6 +38,7 @@ export class EvaluatorRunner implements Runner {
     private resultQueue = `forge_results:${randomUUID()}`;
     private pending = new Map<string, (result: EvaluatorResult | undefined) => void>();
     private closed = false;
+    private idFormat?: Promise<"number" | "string">;
 
     constructor(private config: Config) {
         this.pool = config.runner.pool;
@@ -71,7 +74,7 @@ export class EvaluatorRunner implements Runner {
     }
 
     private async evaluate(request: RunRequest, inputs: RunInput[]): Promise<RunResult> {
-        const id = randomUUID();
+        const id = await this.evaluationId();
         const checker =
             typeof request.checking === "object"
                 ? { script: request.checking.source, language: request.checking.language }
@@ -99,12 +102,53 @@ export class EvaluatorRunner implements Runner {
         return this.interpret(await this.send(id, message), inputs, request.checking === "capture");
     }
 
-    private async send(id: string, message: unknown): Promise<EvaluatorResult | undefined> {
+    /**
+     * Evaluator `master` declares evaluation ids as unsigned integers (what kontestis sends)
+     * and drops any message it cannot parse without answering; its string-id branch does the
+     * same to numbers. Unless configured, the first job finds out which form gets an answer.
+     */
+    private async evaluationId(): Promise<number | string> {
+        const configured = this.config.runner.idFormat;
+        const format = configured === "auto" ? await (this.idFormat ??= this.detectIdFormat()) : configured;
+        const id = randomInt(1, 2 ** 48 - 1);
+        return format === "string" ? String(id) : id;
+    }
+
+    private async detectIdFormat(): Promise<"number" | "string"> {
+        const probe = (id: number | string) =>
+            this.send(
+                id,
+                {
+                    BeginEvaluation: {
+                        output_queue: this.resultQueue,
+                        evaluation: { OutputOnly: { id, output: "", testcase: { id: "probe", input: "", output: "" }, checker: null } },
+                    },
+                },
+                PROBE_TIMEOUT_MS,
+            );
+        // the form the evaluator cannot parse never answers, so take whichever answers first
+        const answered = (format: "number" | "string", id: number | string) =>
+            probe(id).then((result) => (result ? format : new Promise<never>(() => {})));
+        const format = await Promise.race([
+            answered("number", randomInt(1, 2 ** 48 - 1)),
+            answered("string", String(randomInt(1, 2 ** 48 - 1))),
+            new Promise<undefined>((resolve) => {
+                setTimeout(() => resolve(undefined), PROBE_TIMEOUT_MS).unref();
+            }),
+        ]);
+        if (format) return format;
+        // nothing answered (no evaluator, or a long queue): assume the released form and ask again next time
+        this.idFormat = undefined;
+        return "number";
+    }
+
+    private async send(evaluation: number | string, message: unknown, timeoutMs = this.config.runner.jobTimeoutMs): Promise<EvaluatorResult | undefined> {
+        const id = String(evaluation);
         const answer = new Promise<EvaluatorResult | undefined>((resolve) => {
             this.pending.set(id, resolve);
             setTimeout(() => {
                 if (this.pending.delete(id)) resolve(undefined);
-            }, this.config.runner.jobTimeoutMs).unref();
+            }, timeoutMs).unref();
         });
         await this.client.rPush(this.config.runner.queueKey, JSON.stringify(message));
         return answer;
@@ -170,7 +214,7 @@ export class EvaluatorRunner implements Runner {
         for (let offset = 0; offset < request.inputs.length; offset += CHECK_CONCURRENCY) {
             const results = await Promise.all(
                 request.inputs.slice(offset, offset + CHECK_CONCURRENCY).map(async (input) => {
-                    const id = randomUUID();
+                    const id = await this.evaluationId();
                     const message = {
                         BeginEvaluation: {
                             output_queue: this.resultQueue,

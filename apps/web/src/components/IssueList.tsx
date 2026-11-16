@@ -49,7 +49,12 @@ export const IssueList = ({
                                 <code className="font-mono text-xs text-subtle">{issue.ref}</code>
                             )}
                         </div>
-                        <p className="break-words">{issue.message}</p>
+                        <p className="break-words">{issue.message.split("\n")[0]}</p>
+                        {issue.message.includes("\n") && (
+                            <pre className="mt-1 max-h-64 overflow-auto rounded-md border border-line bg-surface-2 p-2 font-mono text-xs whitespace-pre-wrap">
+                                {issue.message.slice(issue.message.indexOf("\n") + 1)}
+                            </pre>
+                        )}
                     </div>
                 </li>
             ))}

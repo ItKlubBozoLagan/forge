@@ -38,6 +38,8 @@ export const loadConfig = () => {
             concurrency: int("RUNNER_CONCURRENCY", 4),
             workspaceConcurrency: int("RUNNER_WORKSPACE_CONCURRENCY", 2),
             jobTimeoutMs: int("RUNNER_JOB_TIMEOUT_MS", 15 * 60_000),
+            /** How evaluation ids are sent: `number` (evaluator master), `string`, or `auto` to probe. */
+            idFormat: env("EVALUATOR_ID_FORMAT", "auto") as "auto" | "number" | "string",
         },
         auth: {
             /** Password-less login for local development and tests. Never enable in production. */

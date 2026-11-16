@@ -46,6 +46,23 @@ test("shows a test's input and answer", async ({ page }) => {
     await expect(dialog).toContainText("1 5 3 3 2");
 });
 
+test("shows what a failing solution printed on a test", async ({ page }) => {
+    await signIn(page, "Ana");
+    await page.goto(`/p/${problemId}/builds`);
+    await page.getByRole("button", { name: "full/3" }).first().click();
+    const output = page.getByRole("dialog").getByTestId("solution-output");
+    // the drawer opens on the first solution failing this test: the brute force, killed for time
+    await expect(output).toContainText("Output of solutions/brute.cpp");
+    await expect(output).toContainText("No output was kept");
+    await page.getByRole("dialog").getByRole("button", { name: "solutions/overflow.cpp" }).click();
+    await expect(output).toContainText("Output of solutions/overflow.cpp");
+    await expect(output.locator("pre").first()).toHaveText(/^-?\d+\s*$/);
+    const wrong = (await output.locator("pre").first().textContent())!.trim();
+    await page.getByRole("dialog").getByRole("button", { name: "solutions/main.cpp" }).click();
+    await expect(output).toContainText("Output of solutions/main.cpp");
+    await expect(output.locator("pre").first()).not.toHaveText(wrong);
+});
+
 test("validates problem.yaml while it is edited", async ({ page }) => {
     await signIn(page, "Ana");
     await openFile(page, problemId, "problem.yaml");
@@ -161,7 +178,7 @@ test("lets a blind tester test the problem without seeing its files", async ({ p
     await bruno.goto(`/w/${workspaceId}`);
     await bruno.getByRole("link", { name: /Pair Sum/ }).click();
     await expect(bruno.getByRole("heading", { name: "Sample 1" })).toBeVisible();
-    for (const hidden of ["Files", "Builds", "Revisions", "Stress", "Access"])
+    for (const hidden of ["Files", "Builds", "Revisions", "Stress", "Access & settings"])
         await expect(bruno.getByRole("tab", { name: hidden }).or(bruno.getByRole("link", { name: hidden, exact: true }))).toHaveCount(0);
     // the API refuses too, not only the navigation
     expect((await bruno.request.get(`/api/problems/${problemId}/tree`)).status()).toBe(403);
@@ -294,4 +311,19 @@ test("builds an output-only task whose solutions are output files", async ({ pag
     await build(page, "red");
     await expect(page.getByTestId("cell-solutions/greedy-tests/1")).toContainText("WA");
     await expect(page.getByTestId("issues")).toContainText("solutions/greedy is expected to be PA");
+});
+
+test("retitles and deletes a problem from its settings", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Throwaway");
+    await page.goto(`/p/${id}/access`);
+    await page.getByLabel("Title").fill("Throwaway Renamed");
+    await page.getByRole("button", { name: "Save title" }).click();
+    await expect(page.getByRole("heading", { name: "Throwaway Renamed" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete problem" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page).toHaveURL(/\/w\/\d+$/);
+    await expect(page.getByRole("button", { name: "New problem" }).first()).toBeVisible();
+    await expect(page.getByText("Throwaway Renamed")).toHaveCount(0);
 });

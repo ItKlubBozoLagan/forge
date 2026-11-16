@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type { BuildOutput } from "../../../lib/types";
 import { Badge, Verdict } from "../../../ui/Badge";
 import { Dialog } from "../../../ui/Dialog";
@@ -5,6 +7,12 @@ import { ErrorNotice } from "../../../ui/misc";
 import { Table, Td, Th, Tr } from "../../../ui/Table";
 import { formatKb, formatMs } from "../../../lib/format";
 import { BlobPreview } from "./BlobPreview";
+
+/** Compiler output and long checker messages are shown under the table, not squeezed into a cell. */
+const firstLine = (message: string | undefined) => {
+    const line = (message ?? "").split("\n")[0] ?? "";
+    return line.length > 120 ? `${line.slice(0, 120)}...` : line;
+};
 
 export const TestDialog = ({
     problemId,
@@ -19,6 +27,17 @@ export const TestDialog = ({
 }) => {
     const test = output.tests.find((item) => item.id === testId);
     const safeName = (testId ?? "test").replace(/\//g, "-");
+    const [chosen, setChosen] = useState<string>();
+    const solutions = Object.keys(output.matrix);
+    // start on the first solution that fails this test: that is the output worth reading
+    const selected =
+        chosen && solutions.includes(chosen)
+            ? chosen
+            : (solutions.find((path) => {
+                  const verdict = output.matrix[path]?.[testId ?? ""]?.verdict;
+                  return verdict !== undefined && verdict !== "AC";
+              }) ?? solutions[0]);
+    const selectedResult = selected ? output.matrix[selected]?.[testId ?? ""] : undefined;
     return (
         <Dialog
             open={!!testId}
@@ -78,8 +97,20 @@ export const TestDialog = ({
                                     {Object.entries(output.matrix).map(([solution, row]) => {
                                         const result = row[test.id];
                                         return (
-                                            <Tr key={solution}>
-                                                <Td className="font-mono text-xs">{solution}</Td>
+                                            <Tr
+                                                key={solution}
+                                                className={solution === selected ? "bg-accent-soft/40" : undefined}
+                                            >
+                                                <Td className="font-mono text-xs">
+                                                    <button
+                                                        type="button"
+                                                        className="text-left text-accent hover:underline"
+                                                        aria-pressed={solution === selected}
+                                                        onClick={() => setChosen(solution)}
+                                                    >
+                                                        {solution}
+                                                    </button>
+                                                </Td>
                                                 <Td>
                                                     {result ? (
                                                         <Verdict verdict={result.verdict} />
@@ -94,7 +125,7 @@ export const TestDialog = ({
                                                     {formatKb(result?.memoryKb)}
                                                 </Td>
                                                 <Td className="text-xs text-muted">
-                                                    {result?.message ?? ""}
+                                                    {firstLine(result?.message)}
                                                 </Td>
                                             </Tr>
                                         );
@@ -103,6 +134,35 @@ export const TestDialog = ({
                             </Table>
                         </div>
                     </section>
+                    {selected && (
+                        <section data-testid="solution-output">
+                            <h3 className="mb-1 text-[13px] font-semibold">
+                                Output of <span className="font-mono">{selected}</span>
+                            </h3>
+                            {selectedResult?.message && selectedResult.message.includes("\n") && (
+                                <pre className="mb-2 max-h-64 overflow-auto rounded-md border border-line bg-surface-2 p-2 font-mono text-xs whitespace-pre-wrap">
+                                    {selectedResult.message}
+                                </pre>
+                            )}
+                            {selectedResult?.outputHash ? (
+                                <BlobPreview
+                                    problemId={problemId}
+                                    hash={selectedResult.outputHash}
+                                    label="Output"
+                                    fileName={`${safeName}.${selected.replace(/[^A-Za-z0-9]+/g, "-")}.out`}
+                                />
+                            ) : (
+                                <p className="text-sm text-muted">
+                                    {selectedResult
+                                        ? "No output was kept for this run (the program was killed, crashed or did not compile)."
+                                        : "This solution did not run on this test."}
+                                </p>
+                            )}
+                            <p className="mt-1 text-xs text-muted">
+                                Select a solution in the table to see what it printed.
+                            </p>
+                        </section>
+                    )}
                     <BlobPreview
                         problemId={problemId}
                         hash={test.inputHash}

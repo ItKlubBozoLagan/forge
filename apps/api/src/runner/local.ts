@@ -91,7 +91,8 @@ const interact = async (
     judge.stdin.write(`${stdin}\n`);
     child.stdout.pipe(judge.stdin);
     judge.stdout.pipe(child.stdin);
-    const closed = (process: typeof child) => new Promise<number | null>((resolve) => process.on("close", (code) => resolve(code)));
+    const closed = (process: { on(event: "close", listener: (code: number | null) => void): unknown }) =>
+        new Promise<number | null>((resolve) => process.on("close", (code) => resolve(code)));
     const [code] = await Promise.all([closed(child), closed(judge)]);
     clearTimeout(timer);
     const verdict = await readFile(join(directory, "interactor_meta.out"), "utf8").then(
@@ -206,7 +207,8 @@ export class LocalRunner implements Runner {
             const runs: RunOutcome[] = [];
             for (const input of request.inputs) {
                 const base = { id: input.id, timeMs: 0, memoryKb: 0 };
-                if (checker) runs.push({ ...base, ...(await runChecker(checker, input.stdin, input.expected, input.output)) });
+                if (checker && "command" in checker)
+                    runs.push({ ...base, ...(await runChecker(checker, input.stdin, input.expected, input.output)) });
                 else runs.push({ ...base, status: tokens(input.output) === tokens(input.expected) ? "accepted" : "wrong_answer" });
             }
             return { runs };

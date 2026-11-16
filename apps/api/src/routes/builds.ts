@@ -146,7 +146,8 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
     /**
      * Runs a solution that is not part of the package against the tests. Blind testers use
      * this to test a problem without seeing its solutions or data: they always run against
-     * the latest revision and only get per-group outcomes back.
+     * the latest revision and only get per-group outcomes back. Everyone else runs against
+     * the working copy unless they name a revision.
      */
     server.post("/problems/:id/invocations", async (req) => {
         const user = await currentUser(app, req);
@@ -165,8 +166,7 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
         if (!can(role, "read")) {
             if (!head) throw conflict("The problem has no revision to test yet");
             target = { tree: head.tree, revisionId: head.id };
-        } else if (body.data.revision) target = await resolveTree(app, problem, body.data.revision);
-        else target = head ? { tree: head.tree, revisionId: head.id } : { tree: problem.draft_tree };
+        } else target = await resolveTree(app, problem, body.data.revision);
         const { name, language, source } = body.data;
         await audit(app, { workspaceId: problem.workspace_id, problemId: problem.id, userId: user.id, action: "invocation.run", detail: { name, language } });
         return queue(problem, user.id, "invocation", target.tree, target.revisionId, { adhoc: { name, language, source } });

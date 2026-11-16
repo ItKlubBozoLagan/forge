@@ -12,16 +12,19 @@ export type TestResult = {
     timeMs: number;
     memoryKb: number;
     message?: string;
+    outputHash?: string;
 };
 
 /** Raw outcome of one sandboxed run, before the problem's time limit is applied. */
 export type RawRun = {
     status: "accepted" | "wrong_answer" | "custom" | "time_limit_exceeded" | "memory_limit_exceeded" | "runtime_error" | "compilation_error" | "judge_error";
-    /** Checker payload for `custom`: a score in [0, 1]. */
+    /** Checker payload for `custom`: `partial:<score in [0, 1]>`, the form kontestis scores. */
     data?: string;
     timeMs: number;
     memoryKb: number;
     message?: string;
+    /** Blob holding what the program printed (or the submitted file of an output-only task). */
+    outputHash?: string;
 };
 
 /**
@@ -30,7 +33,7 @@ export type RawRun = {
  * actual limit, which also means changing the limit does not need a re-run.
  */
 export const judge = (raw: RawRun, timeLimitMs: number): TestResult => {
-    const base = { timeMs: raw.timeMs, memoryKb: raw.memoryKb, message: raw.message };
+    const base = { timeMs: raw.timeMs, memoryKb: raw.memoryKb, message: raw.message, outputHash: raw.outputHash };
     switch (raw.status) {
         case "compilation_error":
             return { ...base, verdict: "CE", score: 0 };
@@ -46,7 +49,9 @@ export const judge = (raw: RawRun, timeLimitMs: number): TestResult => {
     if (raw.timeMs > timeLimitMs) return { ...base, verdict: "TLE", score: 0 };
     if (raw.status === "accepted") return { ...base, verdict: "AC", score: 1 };
     if (raw.status === "wrong_answer") return { ...base, verdict: "WA", score: 0 };
-    const score = Number(raw.data);
+    // kontestis awards partial credit for `custom:partial:<fraction>`; a bare number is accepted too
+    const payload = (raw.data ?? "").trim();
+    const score = payload === "" ? Number.NaN : Number(payload.startsWith("partial:") ? payload.slice("partial:".length) : payload);
     if (!Number.isFinite(score) || score < 0 || score > 1)
         return {
             ...base,

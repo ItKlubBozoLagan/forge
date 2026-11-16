@@ -271,7 +271,7 @@ if not N_MIN <= int(lines[0]) <= N_MAX:
 `,
     "interactor.py": `# The interactor receives the test on stdin, then one extra newline, then everything the
 # solution prints. Read the solution's output token by token so blank lines do not matter.
-# What it prints goes to the solution. Its verdict (AC, WA or custom:<score>) is written to
+# What it prints goes to the solution. Its verdict (AC, WA or custom:partial:<score>) is written to
 # interactor_meta.out. N_MAX and Q_MAX come from the constraints in problem.yaml.
 import sys
 
@@ -405,7 +405,7 @@ if not all(A_MIN <= int(part) <= A_MAX for part in numbers):
 `,
     "checker.py": `# The checker reads one stream: a separator line, the test input, the separator, the
 # reference answer, the separator, the contestant's output and the separator again.
-# It prints AC, WA or custom:<score between 0 and 1>.
+# It prints AC, WA or custom:partial:<score between 0 and 1>.
 import sys
 
 text = sys.stdin.read()
@@ -434,7 +434,7 @@ if not got:
 elif got >= best:
     print("AC")
 else:
-    print(f"custom:{got / best:.4f}")
+    print(f"custom:partial:{got / best:.4f}")
 `,
     "solutions/main.py": `n, limit = map(int, input().split())
 numbers = list(map(int, input().split()))

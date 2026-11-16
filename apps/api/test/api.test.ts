@@ -193,6 +193,95 @@ describe("task types", () => {
     });
 });
 
+describe("what authors need to debug", () => {
+    it("keeps what each solution printed and scores kontestis-style partial verdicts", async () => {
+        const id = await createProblem(ana, "outputs", "honi");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        // kontestis awards partial credit for custom:partial:<fraction>
+        await writeFile(
+            ana,
+            id,
+            "checker.py",
+            `import sys
+text = sys.stdin.read()
+separator = text.split("\\n", 1)[0]
+_, test_input, expected, actual, _ = text.split(separator + "\\n")
+expected, actual = int(expected.split()[0]), int(actual.split()[0])
+print("AC" if actual == expected else "custom:partial:0.25" if abs(actual - expected) == 1 else "WA")
+`,
+        );
+        await writeFile(ana, id, "solutions/offbyone.py", "n, k = map(int, input().split())\na = list(map(int, input().split()))\nprint(sum(1 for i in range(n) for j in range(i + 1, n) if a[i] + a[j] == k) + 1)\n");
+        await writeFile(
+            ana,
+            id,
+            "problem.yaml",
+            manifest
+                .replace("validator: validator.py", "validator: validator.py\nchecker: checker.py")
+                .replace("solutions:\n", "solutions:\n  - { path: solutions/offbyone.py, expect: { samples: PA, cluster1: PA, cluster2: PA } }\n"),
+        );
+        const result = await build(ana, id);
+        const solution = result.output.report.solutions.find((entry: any) => entry.path === "solutions/offbyone.py");
+        expect(solution.groups.find((group: any) => group.group === "cluster1")).toMatchObject({ summary: "PA", score: 5, meets: true });
+
+        // the sample answer is 2; the off-by-one solution printed 3, and that is on record
+        const cell = result.output.matrix["solutions/offbyone.py"]["samples/1"];
+        expect(cell.verdict).toBe("PA");
+        const printed = await ana.get(`/problems/${id}/blobs/${cell.outputHash}`);
+        expect(printed.raw.toString().trim()).toBe("3");
+    });
+
+    it("reports a solution that does not compile once, with the compiler's output", async () => {
+        const id = await createProblem(ana, "nocompile");
+        await writeFile(ana, id, "solutions/overflow.cpp", "int main() { return undeclared_thing; }\n");
+        const result = await build(ana, id);
+        expect(result.result).toBe("red");
+        const issues = result.output.report.issues.filter((issue: any) => issue.code === "solution.compile");
+        expect(issues).toHaveLength(1);
+        expect(issues[0].ref).toBe("solutions/overflow.cpp");
+        expect(issues[0].message).toContain("undeclared_thing");
+    });
+
+    it("refuses a statement with a placeholder problem.yaml cannot fill", async () => {
+        const id = await createProblem(ana, "placeholder");
+        const statement = await readFile(ana, id, "statement/en.md");
+        await writeFile(ana, id, "statement/en.md", `${statement}\nAt most {{M.max}} edges.\n`);
+        const result = await build(ana, id);
+        expect(result.result).toBe("red");
+        const issue = result.output.report.issues.find((entry: any) => entry.code === "statement.unresolved");
+        expect(issue.message).toContain("{{M.max}}");
+    });
+
+    it("runs an author's invocation against the working copy, not the last revision", async () => {
+        const id = await createProblem(ana, "invoke-draft");
+        const committed = await ana.post(`/problems/${id}/revisions`, { message: "First" });
+        await finished(harness, ana, committed.body.buildId);
+        // after the commit the author drops the big group from the working copy
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "problem.yaml", manifest.replace("    depends: [small]\n", "    depends: [small, samples]\n"));
+        const source = await readFile(ana, id, "solutions/main.cpp");
+        const draft = await finished(harness, ana, (await ana.post(`/problems/${id}/invocations`, { name: "mine", language: "cpp", source })).body.id);
+        expect(draft.revisionId).toBeNull();
+        expect(draft.output.groups.find((group: any) => group.name === "full").depends).toEqual(["small", "samples"]);
+        const pinned = await finished(harness, ana, (await ana.post(`/problems/${id}/invocations`, { name: "mine", language: "cpp", source, revision: committed.body.id })).body.id);
+        expect(pinned.revisionId).toBe(committed.body.id);
+        expect(pinned.output.groups.find((group: any) => group.name === "full").depends).toEqual(["small"]);
+    });
+
+    it("stress tests an interactive task through its interactor", async () => {
+        const id = await createProblem(ana, "guess-stress", "interactive");
+        await writeFile(ana, id, "generators/pick.py", "args = dict(part.split(\"=\") for part in input().split())\nprint(int(args[\"seed\"]) * 37 % N_MAX + 1)\n");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "problem.yaml", manifest.replace("groups:\n", "generators:\n  pick: generators/pick.py\n\ngroups:\n"));
+        const queued = await ana.post(`/problems/${id}/stress`, { generator: "pick", args: "seed={seed}", count: 4, seedStart: 100, solution: "solutions/linear.py", group: "secret" });
+        expect(queued.status).toBe(200);
+        const run = await finished(harness, ana, queued.body.id);
+        expect(run.output.errors).toEqual([]);
+        // the linear search only finds secrets up to 20; none of these are that small
+        expect(run.output.passed).toBe(0);
+        expect(run.output.failures.map((failure: any) => failure.verdict)).toEqual(["WA", "WA", "WA", "WA"]);
+    });
+});
+
 describe("working copy", () => {
     it("rejects an edit based on a stale version of the file", async () => {
         const id = await createProblem(ana, "stale");
@@ -269,6 +358,9 @@ describe("revisions and problem sets", () => {
         expect(problem.groups.find((group: any) => group.name === "full").tests).toContain("small/1");
         expect(text("A/tests/samples-001.in")).toBe("5 6\n1 5 3 3 2\n");
         expect(text("A/tests/samples-001.out").trim()).toBe("2");
+        // kontestis keeps a reference solution with every problem
+        expect(problem.solution).toEqual({ path: "solution.cpp", language: "cpp" });
+        expect(text("A/solution.cpp")).toBe(await readFile(ana, id, "solutions/main.cpp"));
         // the statement is rendered: constraints and samples are filled in
         expect(text("A/statement/en.md")).toContain("2 \\cdot 10^{5}");
         expect(text("A/statement/en.md")).toContain("### Sample 1");

@@ -111,7 +111,29 @@ Not done yet:
   output-only. Communication and grader tasks can be described but not built; they need
   multi-process runs and multi-file compilation in the evaluator. See
   [architecture.md](docs/architecture.md#the-runner).
-- **kontestis import.** The judge bundle is exported; kontestis does not import it yet.
+- **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Forge
+  can express things kontestis cannot score today: `aggregate: sum`, group `depends`,
+  fractional points, binary scoring and output-only groups with several tests. Nothing warns
+  about them yet.
+- **Editing the manifest.** `problem.yaml` is edited as text with live validation; there are no
+  forms for tests, groups, solutions or expectations, and renaming a file does not update
+  references to it.
+- **Bulk files.** Files are uploaded one at a time (16 MB each); there is no zip upload and no
+  download of a package or of its generated tests as an archive.
+- **Long jobs.** A runner job that takes more than `RUNNER_JOB_TIMEOUT_MS` (15 minutes,
+  counted from when it is queued) is reported as a judge error, and builds cannot be cancelled.
+  Up to 64 tests go in one job at three times the time limit, so slow solutions on large
+  groups with limits near 5 s can hit this.
+- **Timing.** Verdicts and calibration use the latest measurement of a run, not a statistic
+  over its samples, and there is no rebuild that ignores the cache of generators and answers.
+- **Large tests.** Test data is held in memory as text and sent inline to the evaluator; sets
+  of hundreds of megabytes are untested and binary tests are not supported.
+- **Revisions and review.** Revisions can be restored but not browsed or compared, and review
+  comments are not anchored in the editor.
+- **Checkers.** No built-in checkers beyond token comparison (no float tolerance), no testlib
+  compatibility, no hand-written answer files for manual tests, no import from Polygon.
+- **Checker messages.** The evaluator discards what a checker prints to stderr, so a wrong
+  answer has no explanation beyond the solution's output.
 - **Reference hardware.** Builds warn when measured off the reference class but do not block a
   green result on it.
 - **One working copy per problem.** Authors share it, with conflict detection per file; there

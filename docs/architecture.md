@@ -71,6 +71,11 @@ already exist (output-only tasks) without running anything of the contestant's.
 A scheduler in front of the runner caps jobs in flight in total and per workspace and serves
 waiting workspaces round-robin, so one tenant's stress run cannot starve the others.
 
+The evaluator on `master` takes evaluation ids as unsigned integers, which is what kontestis
+sends, and drops messages it cannot parse without answering. Its `feat/string-evaluation-id`
+branch takes strings instead. `EVALUATOR_ID_FORMAT` selects `number` or `string`; the default
+`auto` sends one probe of each form with the first job and keeps the one that is answered.
+
 ### What the current evaluator protocol limits
 
 - Test data travels inline in the message, so batches are split and very large tests are slow.

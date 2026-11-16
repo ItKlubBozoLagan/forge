@@ -13,6 +13,7 @@ import {
     planBuild,
     PlannedGroup,
     RawRun,
+    renderStatement,
     Report,
     withPrelude,
 } from "@forge/core";
@@ -20,7 +21,7 @@ import {
 import { BlobStore, keyOf, sha256, Tree } from "../blobs";
 import { Sql } from "../db";
 import { Scheduler } from "../runner/scheduler";
-import { Program, Runner, RunRequest, RunResult } from "../runner/types";
+import { CheckRequest, Program, Runner, RunRequest, RunResult } from "../runner/types";
 
 export type Progress = { phase: string; done: number; total: number };
 
@@ -70,6 +71,8 @@ export type BuildOptions = { remeasure?: boolean; adhoc?: AdhocSolution };
 
 const GENERATOR_LIMIT_MS = 30_000;
 const TOOL_MEMORY_MB = 1024;
+/** Solution output kept per run for inspection; longer output is cut. */
+const MAX_STORED_OUTPUT = 512 * 1024;
 
 type Generated = { hash: string; size: number } | { error: string };
 type Stored<T> = { key: string; value: T };
@@ -278,7 +281,7 @@ export class Engine {
         const checkerId = checker ? sha256(checker.source) : "tokens";
         const limit = measurementLimitMs(task.time_ms);
         const keyOfTest = (test: { inputHash: string; answerHash: string }) =>
-            keyOf("run", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type);
+            keyOf("run2", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type);
         const known = remeasure ? new Map<string, RawRun>() : await this.cached<RawRun>(tests.map(keyOfTest));
         const missing = new Map<string, { inputHash: string; answerHash: string }>();
         for (const test of tests) {
@@ -318,6 +321,11 @@ export class Engine {
                         memoryKb: run.memoryKb,
                         message: run.message,
                     };
+                    // what the solution printed, so a wrong answer can be looked at
+                    if (run.stdout !== undefined) {
+                        const text = run.stdout.length > MAX_STORED_OUTPUT ? `${run.stdout.slice(0, MAX_STORED_OUTPUT)}\n[output truncated]\n` : run.stdout;
+                        raw.outputHash = (await this.ctx.blobs.put(this.ctx.workspaceId, Buffer.from(text, "utf8"))).hash;
+                    }
                     if (run.status === "judge_error") known.set(run.id, raw);
                     else {
                         fresh.push({ key: run.id, value: raw });
@@ -360,7 +368,7 @@ export class Engine {
             if (!known.has(key)) missing.set(key, test);
         }
         if (missing.size > 0) {
-            const inputs = [];
+            const inputs: CheckRequest["inputs"] = [];
             for (const [key, test] of missing)
                 inputs.push({
                     id: key,
@@ -392,6 +400,11 @@ export class Engine {
             if (raw) output.set(test.id, { ...raw, key });
         }
         return output;
+    }
+
+    /** Makes sure the empty blob exists; interactive tasks use it as every test's answer. */
+    async putEmpty() {
+        return this.ctx.blobs.put(this.ctx.workspaceId, Buffer.alloc(0));
     }
 
     /** Fails with a readable message when a tool program does not compile. */
@@ -544,6 +557,18 @@ export class Engine {
             );
         }
 
+        // statements must not reach contestants with a placeholder nobody filled in
+        const groupConstraints = Object.fromEntries(plan.groups.map((group) => [group.name, group.constraints]));
+        for (const [language, path] of Object.entries(plan.statements)) {
+            const { unresolved } = renderStatement(await this.read(path), plan.manifest, groupConstraints, []);
+            if (unresolved.length > 0)
+                error(
+                    "statement.unresolved",
+                    `The ${language} statement uses ${unresolved.map((name) => `{{${name}}}`).join(", ")}, which problem.yaml does not define`,
+                    path,
+                );
+        }
+
         // 3. answers
         const withInput = tests.filter((test) => test.inputHash);
         const checker = plan.checker
@@ -618,7 +643,8 @@ export class Engine {
                         if (entry) submitted.push({ ...test, outputHash: entry.hash });
                         else raw.set(test.id, { status: "wrong_answer", timeMs: 0, memoryKb: 0, message: "no output file for this test" });
                     }
-                    for (const [id, run] of await this.checkOutputs(checker, submitted)) raw.set(id, run);
+                    const files = new Map(submitted.map((test) => [test.id, test.outputHash]));
+                    for (const [id, run] of await this.checkOutputs(checker, submitted)) raw.set(id, { ...run, outputHash: files.get(id) });
                 }
                 const row: Matrix[string] = {};
                 const keys: Record<string, string> = {};
@@ -630,6 +656,9 @@ export class Engine {
                 }
                 matrix[solution.path] = row;
                 runKeys[solution.path] = keys;
+                const compileError = [...raw.values()].find((run) => run.status === "compilation_error");
+                if (compileError)
+                    error("solution.compile", `${solution.path} does not compile:\n${(compileError.message ?? "").trim()}`, solution.path);
                 const judgeError = [...raw.values()].find((run) => run.status === "judge_error");
                 if (judgeError)
                     error("run.judge-error", `${solution.path}: the judge failed on some tests (${judgeError.message ?? "unknown"})`, solution.path);

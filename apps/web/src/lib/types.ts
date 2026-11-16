@@ -143,6 +143,8 @@ export type StressOutput = {
         inputHash: string;
         inputSize: number;
         timeMs: number;
+        answerHash?: string;
+        outputHash?: string;
     }>;
     invalid: Array<{ args: string; message: string }>;
     errors: string[];

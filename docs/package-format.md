@@ -122,7 +122,7 @@ including groups that inherit it through `depends`, each time with that group's 
 
 **Checker.** Reads one stream from stdin made of four sections, each introduced by the same
 random separator line (the first line of the stream): the test input, the expected answer, the
-solution's output, and a closing separator. Prints `AC`, `WA`, or `custom:<score>` with a score
+solution's output, and a closing separator. Prints `AC`, `WA`, or `custom:partial:<score>` with a score
 in `[0, 1]` for partial credit.
 
 ```python
@@ -135,7 +135,7 @@ print("AC" if actual.split() == expected.split() else "WA")
 
 **Interactor** (`type: interactive`, set as `checker`). Its stdin carries the test, one extra
 newline, then everything the solution prints; what it prints goes to the solution. It writes its
-verdict (`AC`, `WA` or `custom:<score>`) to the file `interactor_meta.out`. See
+verdict (`AC`, `WA` or `custom:partial:<score>`) to the file `interactor_meta.out`. See
 [`examples/guess`](../examples/guess). A verdict other than `AC` written by the interactor decides
 the run even when the solution then crashes on its closed input; on the current evaluator such a
 run can instead surface as `TLE`, so expect `"WA|TLE"` from solutions the interactor rejects.
