@@ -649,6 +649,16 @@ int main(int argc, char* argv[]) {
         expect(JSON.parse(Buffer.from(files["A/problem.json"]!).toString()).inputFraming).toBe("length-prefixed");
     }, 180_000);
 
+    it("refuses a test that is not text instead of judging altered bytes", async () => {
+        const id = await createProblem(ana, "binary-test");
+        await ana.put(`/problems/${id}/file?path=${encodeURIComponent("tests/sample1.in")}`, Buffer.from([0x35, 0x20, 0xff, 0xfe, 0x0a]));
+        const result = await build(ana, id);
+        expect(result.result).toBe("red");
+        const issue = result.output.report.issues.find((entry: any) => entry.code === "test.binary");
+        expect(issue.ref).toBe("samples/1");
+        expect(result.output.matrix["solutions/main.cpp"]["samples/1"]).toBeUndefined();
+    });
+
     it("says why an output was rejected", async () => {
         // the judge's default comparison: Forge compares the texts itself
         const plain = await build(ana, problemId);

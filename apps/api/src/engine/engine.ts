@@ -20,6 +20,8 @@ import {
     withPrelude,
 } from "@forge/core";
 
+import { isUtf8 } from "node:buffer";
+
 import { BlobStore, keyOf, sha256, Tree } from "../blobs";
 import { Sql } from "../db";
 import { Scheduler } from "../runner/scheduler";
@@ -767,6 +769,14 @@ export class Engine {
             const test = testById.get(planned.id)!;
             if (planned.source.kind === "manual") {
                 const entry = this.ctx.tree[planned.source.path]!;
+                // The evaluator takes test data as JSON text. A file that is not UTF-8 would be
+                // altered on the way, so it is refused here instead of judged on other bytes.
+                const data = await this.ctx.blobs.get(this.ctx.workspaceId, entry.hash);
+                if (data && !isUtf8(data)) {
+                    test.error = "the file is not UTF-8 text";
+                    error("test.binary", `Test ${planned.id} (${planned.source.path}) is not UTF-8 text; the evaluator can only pass text to a program`, planned.id);
+                    continue;
+                }
                 test.inputHash = entry.hash;
                 test.inputSize = entry.size;
                 continue;

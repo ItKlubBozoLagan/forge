@@ -133,8 +133,9 @@ Not done, and why:
   shows why an output was rejected for the default comparison, built-in checkers and testlib
   checkers (it runs those once more to print their comment); a checker written to Forge's own
   protocol has no channel for a comment.
-- **Binary and very large tests.** Test data travels to the evaluator inline as JSON text, so
-  tests must be UTF-8 text, and sets of hundreds of megabytes are untested.
+- **Binary tests.** The evaluator takes test data as JSON text, so a test that is not UTF-8
+  cannot reach a program unchanged. Forge refuses such a test with a build error
+  (`test.binary`) instead of judging altered bytes. Sets of hundreds of megabytes are untested.
 - **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Set
   `judge: kontestis` in `problem.yaml` to be warned about what kontestis cannot score today
   (summed groups, group dependencies, fractional points, binary scoring, output-only groups
