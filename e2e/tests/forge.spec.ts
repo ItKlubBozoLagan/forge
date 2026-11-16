@@ -58,6 +58,8 @@ test("shows what a failing solution printed on a test", async ({ page }) => {
     await page.getByRole("dialog").getByRole("button", { name: "solutions/overflow.cpp" }).click();
     await expect(output).toContainText("Output of solutions/overflow.cpp");
     await expect(output.locator("pre").first()).toHaveText(/^-?\d+\s*$/);
+    // and why it was rejected
+    await expect(page.getByRole("dialog")).toContainText(/line 1: expected "\d+", found "-?\d+"/);
     const wrong = (await output.locator("pre").first().textContent())!.trim();
     await page.getByRole("dialog").getByRole("button", { name: "solutions/main.cpp" }).click();
     await expect(output).toContainText("Output of solutions/main.cpp");

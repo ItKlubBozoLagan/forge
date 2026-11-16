@@ -76,20 +76,37 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
     const files: Record<string, Uint8Array> = {};
     const name = (String(problem["short-name"] ?? "imported").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "imported").slice(0, 60);
     const names = asArray<Record<string, string>>(problem.names?.name);
-    const title = (names.find((entry) => entry.language === "english") ?? names[0])?.value ?? name;
+    // Polygon leaves the name empty when it is only set in the statement
+    const properties = Object.keys(archive)
+        .filter((path) => path.startsWith(`${prefix}statements/`) && path.endsWith("/problem-properties.json"))
+        .sort((a, b) => Number(b.includes("/english/")) - Number(a.includes("/english/")));
+    let statementName: string | undefined;
+    try {
+        statementName = properties[0] ? (JSON.parse(text(archive[properties[0]]!)) as { name?: string }).name : undefined;
+    } catch {
+        statementName = undefined;
+    }
+    const title = ((names.find((entry) => entry.language === "english") ?? names[0])?.value || statementName || name).trim() || name;
 
-    const testsets = asArray<Record<string, any>>(problem.judging?.testset);
-    const testset = testsets.find((entry) => entry.name === "tests") ?? testsets[0];
-    if (!testset) throw new Error("problem.xml has no testset");
-    if (testsets.length > 1) notes.push(`Only the testset "${testset.name}" was imported; the package has ${testsets.length}.`);
+    // A testset with tests is a set of tests judged together. Packages for subtask scoring often
+    // use one testset per subtask instead of groups inside "tests"; both shapes are imported.
+    const testsets = asArray<Record<string, any>>(problem.judging?.testset).filter(
+        (entry) => asArray(entry.tests?.test).length > 0 || Number(entry["test-count"] ?? 0) > 0,
+    );
+    if (testsets.length === 0) throw new Error("problem.xml has no testset with tests");
+    const several = testsets.length > 1;
+    const times = testsets.map((entry) => Number(entry["time-limit"] ?? 1000));
+    const memories = testsets.map((entry) => Number(entry["memory-limit"] ?? 268435456));
+    if (new Set(times).size > 1 || new Set(memories).size > 1)
+        notes.push("The testsets have different limits; Forge has one pair of limits per problem, so the largest were taken.");
 
     const manifest: Record<string, any> = {
         name,
         title,
         type: "batch",
         limits: {
-            time_ms: Math.min(60_000, Math.max(50, Number(testset["time-limit"] ?? 1000))),
-            memory_mb: Math.min(4096, Math.max(16, Math.round(Number(testset["memory-limit"] ?? 268435456) / (1024 * 1024)))),
+            time_ms: Math.min(60_000, Math.max(50, Math.max(...times))),
+            memory_mb: Math.min(4096, Math.max(16, Math.round(Math.max(...memories) / (1024 * 1024)))),
         },
     };
 
@@ -115,7 +132,7 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
     const validator = program(asArray<any>(assets.validators?.validator)[0]?.source?.path, "validator", "Validator");
     if (assets.interactor) {
         manifest.type = "interactive";
-        notes.push("The problem is interactive. Forge cannot run testlib interactors: rewrite interactor.cpp to Forge's interactor protocol (see the package format docs) before building.");
+        notes.push("The problem is interactive: its interactor decides the verdict, and what it writes to its output file (tout) is not passed on to a checker.");
         if (interactor) manifest.checker = interactor;
         if (checker) notes.push(`The checker was imported as ${checker} but is not used: an interactive task is judged by its interactor.`);
     } else if (checker) manifest.checker = checker;
@@ -139,76 +156,99 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
     };
 
     // tests and groups
-    const declared = new Map(asArray<Record<string, any>>(testset.groups?.group).map((group) => [String(group.name), group]));
-    const inputPattern = String(testset["input-path-pattern"] ?? "tests/%02d");
-    type Bucket = { name: string; sample: boolean; points: number; samples: number; tests: Array<Record<string, unknown>> };
+    type Bucket = { name: string; sample: boolean; points: number; samples: number; perTest: boolean; depends: string[]; tests: Array<Record<string, unknown>> };
     const buckets = new Map<string, Bucket>();
     const bucket = (key: string, sample: boolean) => {
         let found = buckets.get(key);
-        if (!found) buckets.set(key, (found = { name: key, sample, points: 0, samples: 0, tests: [] }));
+        if (!found) buckets.set(key, (found = { name: key, sample, points: 0, samples: 0, perTest: false, depends: [], tests: [] }));
         return found;
     };
-    const tests = asArray<Record<string, string>>(testset.tests?.test);
-    const grouped = tests.some((test) => test.group !== undefined);
-    tests.forEach((test, offset) => {
-        const index = offset + 1;
-        const sample = test.sample === "true";
-        const target = grouped ? bucket(groupName(String(test.group ?? "ungrouped")), false) : bucket(sample ? "samples" : "tests", sample);
-        if (test.points !== undefined) target.points += Number(test.points) || 0;
-        if (sample) target.samples += 1;
-        const [command, ...args] = String(test.cmd ?? "").trim().split(/\s+/);
-        const generator = test.method === "generated" && command ? generatorFor(command) : undefined;
-        if (generator) {
-            target.tests.push({ gen: generator, args: args.join(" ") });
-            return;
-        }
-        const input = file(pattern(inputPattern, index));
-        if (!input) {
-            notes.push(
-                test.method === "generated"
-                    ? `Test ${index} is generated by "${test.cmd}", whose generator source is not in the archive, and the test file is not either; it was skipped. Download the full package from Polygon to include generated tests.`
-                    : `Test ${index} has no input file in the archive; it was skipped.`,
+    /** Group a testset's tests end up in when the package gives it no groups of its own. */
+    const plain = new Map<string, string>();
+    let grouped = false;
+    for (const testset of testsets) {
+        const setName = String(testset.name ?? "tests");
+        const declared = new Map(asArray<Record<string, any>>(testset.groups?.group).map((group) => [String(group.name), group]));
+        const inputPattern = String(testset["input-path-pattern"] ?? "tests/%02d");
+        let entries = asArray<Record<string, string>>(testset.tests?.test);
+        // a testset can list no tests and still ship numbered files
+        if (entries.length === 0) entries = Array.from({ length: Number(testset["test-count"] ?? 0) }, () => ({ method: "manual" }));
+        const setGrouped = entries.some((test) => test.group !== undefined);
+        grouped ||= setGrouped;
+        entries.forEach((test, offset) => {
+            const index = offset + 1;
+            const sample = test.sample === "true";
+            const key = setGrouped
+                ? groupName(`${several ? `${setName}-` : ""}${test.group ?? "ungrouped"}`)
+                : several
+                  ? groupName(setName)
+                  : sample
+                    ? "samples"
+                    : "tests";
+            const target = bucket(key, !setGrouped && !several && sample);
+            if (!setGrouped) plain.set(setName, key);
+            if (test.points !== undefined) {
+                target.points += Number(test.points) || 0;
+                target.perTest = true;
+            }
+            if (sample) target.samples += 1;
+            const [command, ...args] = String(test.cmd ?? "").trim().split(/\s+/);
+            const generator = test.method === "generated" && command ? generatorFor(command) : undefined;
+            if (generator) {
+                target.tests.push({ gen: generator, args: args.join(" ") });
+                return;
+            }
+            const input = file(pattern(inputPattern, index));
+            if (!input) {
+                notes.push(
+                    test.method === "generated"
+                        ? `Test ${index} of "${setName}" is generated by "${test.cmd}", whose generator source is not in the archive, and the test file is not either; it was skipped. Download the full package from Polygon to include generated tests.`
+                        : `Test ${index} of "${setName}" has no input file in the archive; it was skipped.`,
+                );
+                return;
+            }
+            const path = `tests/${several ? `${groupName(setName)}/` : ""}${String(index).padStart(2, "0")}.in`;
+            files[path] = input;
+            target.tests.push({ manual: path });
+        });
+        for (const [groupKey, group] of declared) {
+            const target = buckets.get(groupName(`${several ? `${setName}-` : ""}${groupKey}`));
+            if (!target) continue;
+            if (group.points !== undefined) target.points = Number(group.points) || 0;
+            target.perTest = group["points-policy"] === "each-test";
+            target.depends = asArray<Record<string, string>>(group.dependencies?.dependency).map((dependency) =>
+                groupName(`${several ? `${setName}-` : ""}${dependency.group}`),
             );
-            return;
         }
-        const path = `tests/${String(index).padStart(2, "0")}.in`;
-        files[path] = input;
-        target.tests.push({ manual: path });
-    });
+    }
+    for (const [key, entry] of buckets) if (entry.tests.length === 0) buckets.delete(key);
 
-    const pointsOf = (entry: Bucket) => {
-        const group = declared.get(entry.name);
-        return group?.points !== undefined ? Number(group.points) || 0 : entry.points;
-    };
-    const anyPoints = [...buckets.values()].some((entry) => pointsOf(entry) > 0);
-    if (!anyPoints) manifest.scoring = { mode: "binary" };
-    if (Object.keys(generators).length > 0) manifest.generators = generators;
-    // in a grouped package the samples are whichever group holds only sample tests
+    // where the samples are: a group holding only sample tests
     for (const entry of buckets.values()) {
-        if (!grouped || entry.samples === 0) continue;
+        if (entry.sample || entry.samples === 0) continue;
         if (entry.samples === entry.tests.length) entry.sample = true;
         else notes.push(`Group "${entry.name}" mixes sample tests with others; Forge shows samples per group, so move them to a group with sample: true to have them in the statement.`);
     }
+    if (![...buckets.values()].some((entry) => entry.sample)) notes.push("No test is marked as a sample, so the statement will show no samples; put the sample tests in a group with sample: true.");
     const resources = asArray<Record<string, string>>(problem.files?.resources?.file)
         .map((resource) => String(resource.path ?? ""))
         .filter((path) => path && !/(^|\/)(testlib\.h|olymp\.sty|problem\.tex|statements\.ftl|tutorial\.tex)$/.test(path));
     if (resources.length > 0)
         notes.push(`Resource files are not imported (${resources.slice(0, 5).join(", ")}${resources.length > 5 ? ", ..." : ""}); a tool that includes one of them must be made self-contained.`);
-    manifest.groups = [...buckets.values()].map((entry) => {
-        const group = declared.get(entry.name);
-        // points given per test add up; Polygon's group policy decides otherwise
-        const perTest = group ? group["points-policy"] === "each-test" : entry.points > 0;
-        const depends = asArray<Record<string, string>>(group?.dependencies?.dependency).map((dependency) => groupName(String(dependency.group)));
-        return {
-            name: entry.name,
-            ...(entry.sample ? { sample: true } : {}),
-            ...(anyPoints ? { points: pointsOf(entry) } : {}),
-            ...(perTest && anyPoints && !entry.sample ? { aggregate: "sum" } : {}),
-            ...(!grouped && !entry.sample && buckets.has("samples") ? { depends: ["samples"] } : {}),
-            ...(depends.length > 0 ? { depends: depends.filter((dependency) => buckets.has(dependency)) } : {}),
-            tests: entry.tests,
-        };
-    });
+
+    const anyPoints = [...buckets.values()].some((entry) => entry.points > 0);
+    if (!anyPoints && !several) manifest.scoring = { mode: "binary" };
+    if (!anyPoints && several) notes.push("The package gives its testsets no points; set the points of each group in problem.yaml.");
+    if (Object.keys(generators).length > 0) manifest.generators = generators;
+    manifest.groups = [...buckets.values()].map((entry) => ({
+        name: entry.name,
+        ...(entry.sample ? { sample: true } : {}),
+        ...(anyPoints ? { points: entry.points } : {}),
+        ...(entry.perTest && anyPoints && !entry.sample ? { aggregate: "sum" } : {}),
+        ...(!grouped && !several && !entry.sample && buckets.has("samples") ? { depends: ["samples"] } : {}),
+        ...(entry.depends.length > 0 ? { depends: entry.depends.filter((dependency) => buckets.has(dependency)) } : {}),
+        tests: entry.tests,
+    }));
     if (manifest.groups.length === 0) {
         manifest.groups = [{ name: "tests", tests: [] }];
         notes.push("No test could be imported.");
@@ -221,12 +261,23 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
         const source = solution?.source?.path as string | undefined;
         if (!source) continue;
         const tag = String(solution.tag ?? "accepted");
-        const expectation = TAGS[tag];
-        if (expectation === undefined) {
+        if (!(tag in TAGS)) {
             notes.push(`Solution ${source} has the unknown tag "${tag}"; it was not imported.`);
             continue;
         }
-        if (expectation === null) {
+        // tags given per testset say exactly where a solution is expected to fail
+        const perSet: Record<string, string> = {};
+        let unclear = 0;
+        for (const extra of asArray<Record<string, string>>(solution["extra-tags"]?.["extra-tag"])) {
+            const group = plain.get(String(extra.testset));
+            if (!group || !buckets.has(group)) continue;
+            const expected = TAGS[String(extra.tag)];
+            if (expected) perSet[group] = expected;
+            else unclear += 1;
+        }
+        const expectation = TAGS[tag];
+        const hasPerSet = Object.keys(perSet).length > 0;
+        if (expectation === null && !hasPerSet) {
             notes.push(`Solution ${source} is tagged "${tag}", which Forge cannot express (an expectation is either AC or a set of failures); it was not imported.`);
             continue;
         }
@@ -237,8 +288,11 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
         taken.add(stem);
         if (path.endsWith(".java")) notes.push(`${path}: Java solutions must define their entry point in a class named Main.`);
         if (tag === "main") solutions.push({ path, role: "main" });
-        else if (expectation === "AC") solutions.push({ path });
-        else if (!grouped && buckets.has("tests")) {
+        else if (hasPerSet) {
+            solutions.push({ path, expect: perSet });
+            if (unclear > 0) notes.push(`Solution ${path} has testsets tagged with an either-or outcome; those groups were left without an expectation.`);
+        } else if (expectation === "AC") solutions.push({ path });
+        else if (!grouped && !several && buckets.has("tests")) {
             // a Polygon tag is about the whole test set: the solution may well pass the samples
             solutions.push({ path, expect: { tests: expectation } });
         } else {

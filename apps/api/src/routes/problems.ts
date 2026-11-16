@@ -138,13 +138,13 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         if (!Buffer.isBuffer(req.body)) throw badRequest("Send the Polygon package as application/octet-stream");
         let imported;
         try {
-            // Only what the importer reads is unpacked, and never more than a fixed amount: an
+            // What the importer never reads is not unpacked, and never more than a fixed amount: an
             // archive is small on the wire and can be huge once inflated.
             let total = 0;
-            const wanted = /(^|\/)(problem\.xml|files\/[^/]+|solutions\/[^/]+|tests\/[^/]+|statements\/[^/]+\/problem-properties\.json)$/;
             const unpacked = unzipSync(new Uint8Array(req.body), {
                 filter: (entry) => {
-                    if (!wanted.test(entry.name) || /\.(exe|jar|class|o|a|pdf)$/i.test(entry.name)) return false;
+                    // answers, compiled files and rendered statements are never read by the importer
+                    if (/\.(a|exe|jar|class|o|pdf|dvi|ps|html|png|jpg|log)$/i.test(entry.name) || entry.name.endsWith("/")) return false;
                     if (entry.originalSize > app.config.maxFileBytes) return false;
                     total += entry.originalSize;
                     if (total > POLYGON_MAX_UNPACKED) throw new Error("the package unpacks to more than 512 MB");

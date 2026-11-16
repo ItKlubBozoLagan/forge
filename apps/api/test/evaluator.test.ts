@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { builtinCheckerSource } from "@forge/core";
 
 import { loadConfig } from "../src/config";
-import { withTestlib } from "../src/engine/testlib";
+import { frameInput, withTestlib } from "../src/engine/testlib";
 import { EvaluatorRunner } from "../src/runner/evaluator";
 
 // Needs a kontestis evaluator consuming EVALUATOR_QUEUE_KEY; run with FORGE_TEST_EVALUATOR=1.
@@ -214,5 +214,56 @@ while True:
             ],
         });
         expect(float.runs.map((run) => run.status)).toEqual(["accepted", "wrong_answer"]);
+    }, 120_000);
+
+    it("runs a testlib interactor and gets a testlib checker's comment in the sandbox", async () => {
+        const interactor = withTestlib(
+            `#include "testlib.h"\n#include <iostream>\nint main(int argc, char* argv[]) {\n    registerInteraction(argc, argv);\n    int secret = inf.readInt();\n    std::cout << 100 << std::endl;\n    for (int asked = 1; asked <= 7; asked++) {\n        int guess = ouf.readInt(1, 100, "guess");\n        if (guess == secret) { std::cout << "=" << std::endl; quitf(_ok, "found"); }\n        std::cout << (secret < guess ? "<" : ">") << std::endl;\n    }\n    quitf(_wa, "too many questions");\n}\n`,
+            "cpp",
+            "interactor",
+        );
+        const binary = `low, high = 1, int(input())
+while True:
+    middle = (low + high) // 2
+    print(middle, flush=True)
+    answer = input()
+    if answer == "=":
+        break
+    if answer == "<":
+        high = middle - 1
+    else:
+        low = middle + 1`;
+        const played = await runner.run({
+            program: { language: "python", source: binary },
+            inputs: [
+                { id: "a", stdin: frameInput("37\n"), expected: "" },
+                { id: "b", stdin: frameInput("100\n"), expected: "" },
+            ],
+            checking: { language: "cpp", source: interactor },
+            interactive: true,
+            timeLimitMs: 2000,
+            memoryLimitMb: 256,
+        });
+        expect(played.compileError).toBeUndefined();
+        expect(played.runs.map((run) => [run.id, run.status])).toEqual([
+            ["a", "accepted"],
+            ["b", "accepted"],
+        ]);
+
+        const explain = withTestlib(
+            `#include "testlib.h"\nint main(int argc, char* argv[]) {\n    registerTestlibCmd(argc, argv);\n    int expected = ans.readInt(), found = ouf.readInt();\n    if (expected != found) quitf(_wa, "expected %d, found %d", expected, found);\n    quitf(_ok, "ok");\n}\n`,
+            "cpp",
+            "checker",
+            true,
+        );
+        const separator = "[0123456789abcdef]\n";
+        const commented = await runner.run({
+            program: { language: "cpp", source: explain },
+            inputs: [{ id: "x", stdin: `${separator}2\n\n${separator}4\n\n${separator}9\n\n${separator}` }],
+            checking: "capture",
+            timeLimitMs: 5000,
+            memoryLimitMb: 512,
+        });
+        expect(commented.runs[0]!.stdout).toContain("expected 4, found 9");
     }, 120_000);
 });

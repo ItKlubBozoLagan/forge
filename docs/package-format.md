@@ -135,9 +135,17 @@ points to the evaluator:
 - a generator's arguments (`{ gen: rand, args: "100 7" }`) reach `registerGen` as `argv`;
 - a validator reads the test from stdin and fails with testlib's message;
 - a checker gets the input, output and answer as files; `_ok` is `AC`, `_wa` and `_pe` are
-  `WA`, `quitp(x)` is `custom:partial:x` with `x` in `[0, 1]`, and `_fail` is a judge error.
+  `WA`, `quitp(x)` is `custom:partial:x` with `x` in `[0, 1]`, and `_fail` is a judge error;
+- an interactor (`registerInteraction`) reads the test from `inf` and talks to the solution
+  through `ouf` and stdout as usual. The evaluator sends the test and the solution's output on
+  one stream, so Forge sends the test prefixed with its length in bytes and a newline; the
+  judge bundle exports the inputs of such a problem in the same form
+  (`inputFraming: "length-prefixed"` in `problem.json`). What the interactor writes to `tout`
+  is not passed to a checker: the interactor's own verdict is final.
 
-testlib interactors are not supported. `forge import-polygon package.zip` (or "Import from
+When an output is rejected, the build shows why: the first differing line for the default
+comparison, the position and values for built-in checkers, and testlib's own comment
+(`quitf(_wa, "expected %d, found %d", ...)`) for testlib checkers. `forge import-polygon package.zip` (or "Import from
 Polygon" in the web UI) converts a Polygon package: tools, tests, groups, solutions with their
 tags and statements, and lists what it could not carry over.
 

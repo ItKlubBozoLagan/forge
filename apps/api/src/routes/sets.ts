@@ -129,10 +129,13 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
             const base = `${entry.label}/`;
             const read = (hash: string) => app.blobs.get(set.workspace_id, hash).then((data) => new Uint8Array(data ?? Buffer.alloc(0)));
 
+            // a testlib interactor receives each test prefixed with its length (see engine/testlib.ts)
+            const judge = await engine.checker(plan);
             const tests = [];
             for (const test of output.tests) {
                 const stem = `tests/${test.group}-${String(test.index).padStart(3, "0")}`;
-                files[`${base}${stem}.in`] = await read(test.inputHash!);
+                const input = await read(test.inputHash!);
+                files[`${base}${stem}.in`] = judge?.framed ? new Uint8Array(Buffer.concat([Buffer.from(`${input.length}\n`), input])) : input;
                 files[`${base}${stem}.out`] = await read(test.answerHash!);
                 tests.push({ id: test.id, group: test.group, input: `${stem}.in`, output: `${stem}.out` });
             }
@@ -155,7 +158,7 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
             for (const [path, entry] of Object.entries(tree))
                 if (path.startsWith("statement/") && !path.endsWith(".md")) files[`${base}${path}`] = await read(entry.hash);
             let checker;
-            const checkerProgram = await engine.checker(plan);
+            const checkerProgram = judge;
             if (checkerProgram) {
                 const extension = plan.checker ? plan.checker.path.split(".").pop() : "py";
                 const name = `checker.${extension}`;
@@ -181,6 +184,7 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 scoring: plan.manifest.scoring.mode,
                 checker: checker ?? null,
                 solution,
+                inputFraming: judge?.framed ? "length-prefixed" : "none",
                 titles: typeof title === "string" || !title ? {} : title,
                 groups: plan.groups.map((group) => ({
                     name: group.name,

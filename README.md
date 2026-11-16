@@ -128,20 +128,21 @@ Not done, and why:
   one single-file program per submission; these need several contestant processes or
   multi-file compilation, which is a change to the evaluator
   ([architecture.md](docs/architecture.md#the-runner)).
-- **testlib interactors.** testlib generators, validators and checkers work. Interactors must
-  follow Forge's interactor protocol, because the evaluator hands the test to the interactor on
-  the same stream as the solution's output.
-- **Checker messages.** The evaluator discards what a checker prints to stderr, so a wrong
-  answer shows the solution's output and the answer, but not the checker's comment.
+- **Comments from hand-written checkers.** The evaluator returns only a verdict. Forge still
+  shows why an output was rejected for the default comparison, built-in checkers and testlib
+  checkers (it runs those once more to print their comment); a checker written to Forge's own
+  protocol has no channel for a comment.
 - **Binary and very large tests.** Test data travels to the evaluator inline as JSON text, so
   tests must be UTF-8 text, and sets of hundreds of megabytes are untested.
 - **kontestis import.** The judge bundle is exported; kontestis does not import it yet. Set
   `judge: kontestis` in `problem.yaml` to be warned about what kontestis cannot score today
   (summed groups, group dependencies, fractional points, binary scoring, output-only groups
   with several tests).
-- **Polygon import** was tested on packages written for the tests, not on a package downloaded
-  from Polygon. It does not import solutions tagged "time-limit-exceeded-or-accepted" or
-  testlib interactors, and statements are converted from TeX only roughly.
+- **Polygon import** converts packages with groups or with one testset per subtask, including
+  per-testset solution tags and testlib interactors. It was checked against a real package
+  from a public contest archive for the conversion; statements are converted from TeX only
+  roughly, a solution tagged "time-limit-exceeded-or-accepted" without per-testset tags is
+  skipped, and resource files other than testlib.h are not imported.
 - **Reference hardware.** Builds warn when measured off the reference class but do not block a
   green result on it.
 - **One working copy per problem.** Authors share it, with conflict detection per file; there

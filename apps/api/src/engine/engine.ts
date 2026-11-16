@@ -22,7 +22,7 @@ import {
 import { BlobStore, keyOf, sha256, Tree } from "../blobs";
 import { Sql } from "../db";
 import { Scheduler } from "../runner/scheduler";
-import { usesTestlib, withTestlib } from "./testlib";
+import { frameInput, usesTestlib, withTestlib } from "./testlib";
 import { CheckRequest, Program, Runner, RunRequest, RunResult } from "../runner/types";
 
 export type Progress = { phase: string; done: number; total: number };
@@ -39,6 +39,29 @@ export type EngineContext = {
     onProgress?: (progress: Progress) => void;
     /** Aborted when the build is cancelled. */
     signal?: AbortSignal;
+};
+
+/**
+ * The program that judges outputs, with what Forge needs around it: `explain` is a variant that
+ * prints why an output is wrong, `framed` says the test goes to it length-prefixed (testlib
+ * interactors).
+ */
+export type Judge = Program & { explain?: Program; framed?: boolean };
+
+const clip = (line: string | undefined) => (line === undefined ? "<end of output>" : JSON.stringify(line.length > 80 ? `${line.slice(0, 80)}...` : line));
+
+/** Why the judge's default comparison rejects an output: the first line that differs. */
+export const firstDifference = (expected: string, actual: string): string | undefined => {
+    const lines = (text: string) => {
+        const rows = text.split("\n").map((row) => row.trim());
+        while (rows.length > 0 && rows[rows.length - 1] === "") rows.pop();
+        return rows;
+    };
+    const want = lines(expected);
+    const got = lines(actual);
+    for (let index = 0; index < Math.max(want.length, got.length); index++)
+        if (want[index] !== got[index]) return `line ${index + 1}: expected ${clip(want[index])}, found ${clip(got[index])}`;
+    return undefined;
 };
 
 export class Cancelled extends Error {
@@ -311,7 +334,7 @@ export class Engine {
     /** Runs one solution on tests and returns the raw outcome per test id. */
     async runSolution(
         solution: Program,
-        checker: Program | undefined,
+        checker: Judge | undefined,
         task: { type: string; time_ms: number; memory_mb: number },
         tests: Array<{ id: string; inputHash: string; answerHash: string }>,
         remeasure = false,
@@ -320,7 +343,7 @@ export class Engine {
         const checkerId = checker ? sha256(checker.source) : "tokens";
         const limit = measurementLimitMs(task.time_ms);
         const keyOfTest = (test: { inputHash: string; answerHash: string }) =>
-            keyOf("run2", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type);
+            keyOf("run3", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type);
         const known = remeasure ? new Map<string, RawRun>() : await this.cached<RawRun>(tests.map(keyOfTest));
         const missing = new Map<string, { inputHash: string; answerHash: string }>();
         for (const test of tests) {
@@ -332,16 +355,18 @@ export class Engine {
         for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
             const slice = pending.slice(offset, offset + RUN_SLICE);
             const runInputs = [];
-            for (const [key, test] of slice)
+            for (const [key, test] of slice) {
+                const input = await this.ctx.blobs.text(this.ctx.workspaceId, test.inputHash);
                 runInputs.push({
                     id: key,
-                    stdin: await this.ctx.blobs.text(this.ctx.workspaceId, test.inputHash),
+                    stdin: checker?.framed ? frameInput(input) : input,
                     expected: await this.ctx.blobs.text(this.ctx.workspaceId, test.answerHash),
                 });
+            }
             const result = await this.exec({
                 program: solution,
                 inputs: runInputs,
-                checking: checker ?? "tokens",
+                checking: checker ? { source: checker.source, language: checker.language } : "tokens",
                 interactive: task.type === "interactive",
                 timeLimitMs: limit,
                 memoryLimitMb: task.memory_mb,
@@ -357,13 +382,24 @@ export class Engine {
                 offset = pending.length;
             } else {
                 const samples = [];
+                // why each rejected output is wrong, when the checker can say
+                const byId = new Map(runInputs.map((input) => [input.id, input]));
+                const comments =
+                    task.type === "interactive"
+                        ? new Map<string, string>()
+                        : await this.comments(
+                              checker,
+                              result.runs
+                                  .filter((run) => (run.status === "wrong_answer" || run.status === "custom") && run.stdout !== undefined)
+                                  .map((run) => ({ id: run.id, input: byId.get(run.id)!.stdin, expected: byId.get(run.id)!.expected, output: run.stdout! })),
+                          );
                 for (const run of result.runs) {
                     const raw: RawRun = {
                         status: run.status,
                         data: run.data,
                         timeMs: run.timeMs,
                         memoryKb: run.memoryKb,
-                        message: run.message,
+                        message: run.message ?? comments.get(run.id),
                     };
                     // what the solution printed, so a wrong answer can be looked at
                     if (run.stdout !== undefined) {
@@ -403,6 +439,45 @@ export class Engine {
         return output;
     }
 
+    /**
+     * The checker's comment on outputs it rejected. The evaluator only returns a verdict, so the
+     * comment comes from a second run of the checker built to print it (testlib and built-in
+     * checkers), or from comparing the texts when the judge's default comparison is used.
+     */
+    private async comments(
+        checker: Judge | undefined,
+        items: Array<{ id: string; input: string; expected: string; output: string }>,
+    ): Promise<Map<string, string>> {
+        const comments = new Map<string, string>();
+        if (items.length === 0) return comments;
+        if (!checker) {
+            for (const item of items) {
+                const difference = firstDifference(item.expected, item.output);
+                if (difference) comments.set(item.id, difference);
+            }
+            return comments;
+        }
+        if (!checker.explain) return comments;
+        const separator = `[${sha256(`${items[0]!.id}:${items.length}`)}]\n`;
+        try {
+            const result = await this.exec({
+                program: checker.explain,
+                inputs: items.map((item) => ({ id: item.id, stdin: `${separator}${item.input}\n${separator}${item.expected}\n${separator}${item.output}\n${separator}` })),
+                checking: "capture",
+                timeLimitMs: GENERATOR_LIMIT_MS,
+                memoryLimitMb: TOOL_MEMORY_MB,
+            });
+            for (const run of result.runs) {
+                const text = run.status === "accepted" ? (run.stdout ?? "").trim() : "";
+                if (text) comments.set(run.id, text.length > 500 ? `${text.slice(0, 500)}...` : text);
+            }
+        } catch (error) {
+            if (error instanceof Cancelled) throw error;
+            // a comment is a convenience: the verdict stands without it
+        }
+        return comments;
+    }
+
     private async medianTimes(keys: string[]): Promise<Map<string, number>> {
         const medians = new Map<string, number>();
         const unique = [...new Set(keys)];
@@ -420,12 +495,12 @@ export class Engine {
 
     /** Output-only tasks: judges output files that are part of the package. */
     async checkOutputs(
-        checker: Program | undefined,
+        checker: Judge | undefined,
         tests: Array<{ id: string; inputHash: string; answerHash: string; outputHash: string }>,
     ): Promise<Map<string, RawRun & { key: string }>> {
         const checkerId = checker ? sha256(checker.source) : "tokens";
         const keyOfTest = (test: { inputHash: string; answerHash: string; outputHash: string }) =>
-            keyOf("chk", test.outputHash, test.inputHash, test.answerHash, checkerId);
+            keyOf("chk2", test.outputHash, test.inputHash, test.answerHash, checkerId);
         const known = await this.cached<RawRun>(tests.map(keyOfTest));
         const missing = new Map<string, (typeof tests)[number]>();
         for (const test of tests) {
@@ -443,15 +518,24 @@ export class Engine {
                 });
             const result = await this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
                 if (this.ctx.signal?.aborted) throw new Cancelled();
-                return this.ctx.runner.check({ checking: checker ?? "tokens", inputs });
+                return this.ctx.runner.check({ checking: checker ? { source: checker.source, language: checker.language } : "tokens", inputs });
             });
             const fresh: Array<Stored<RawRun>> = [];
             if (result.compileError !== undefined) {
                 for (const key of missing.keys())
                     known.set(key, { status: "judge_error", timeMs: 0, memoryKb: 0, message: `the checker does not compile:\n${result.compileError}`.slice(0, 4000) });
             } else {
+                const comments = await this.comments(
+                    checker,
+                    result.runs
+                        .filter((run) => run.status === "wrong_answer" || run.status === "custom")
+                        .map((run) => {
+                            const input = inputs.find((entry) => entry.id === run.id)!;
+                            return { id: run.id, input: input.stdin, expected: input.expected, output: input.output };
+                        }),
+                );
                 for (const run of result.runs) {
-                    const raw: RawRun = { status: run.status, data: run.data, timeMs: 0, memoryKb: 0, message: run.message };
+                    const raw: RawRun = { status: run.status, data: run.data, timeMs: 0, memoryKb: 0, message: run.message ?? comments.get(run.id) };
                     if (run.status === "judge_error") known.set(run.id, raw);
                     else fresh.push({ key: run.id, value: raw });
                 }
@@ -469,12 +553,29 @@ export class Engine {
     }
 
     /** The program that judges outputs: the package's checker, a built-in one, or none (the judge's default). */
-    async checker(plan: Plan): Promise<Program | undefined> {
-        if (plan.builtinChecker) return { language: "python", source: builtinCheckerSource(plan.builtinChecker.kind, plan.builtinChecker.eps) };
+    async checker(plan: Plan): Promise<Judge | undefined> {
+        if (plan.builtinChecker) {
+            const { kind, eps } = plan.builtinChecker;
+            return {
+                language: "python",
+                source: builtinCheckerSource(kind, eps),
+                explain: { language: "python", source: builtinCheckerSource(kind, eps, true) },
+            };
+        }
         if (!plan.checker) return undefined;
         const program = await this.program(plan.checker.path);
+        const testlib = usesTestlib(program.source, program.language);
+        if (plan.manifest.type === "interactive")
+            return {
+                language: program.language,
+                source: withPrelude(withTestlib(program.source, program.language, "interactor"), program.language, plan.manifest.constraints),
+                framed: testlib,
+            };
         return {
             language: program.language,
+            explain: testlib
+                ? { language: program.language, source: withPrelude(withTestlib(program.source, program.language, "checker", true), program.language, plan.manifest.constraints) }
+                : undefined,
             // testlib first, so its #line and the prelude's keep diagnostics on the author's lines
             source: withPrelude(withTestlib(program.source, program.language, "checker"), program.language, plan.manifest.constraints),
         };
@@ -655,17 +756,6 @@ export class Engine {
 
         // 3. answers
         const withInput = tests.filter((test) => test.inputHash);
-        if (plan.manifest.type === "interactive" && plan.checker) {
-            const interactor = await this.program(plan.checker.path);
-            if (usesTestlib(interactor.source, interactor.language)) {
-                error(
-                    "interactor.testlib",
-                    "testlib interactors are not supported: the evaluator sends the test and the solution's output on one stream. Rewrite the interactor to Forge's protocol (see the package format docs)",
-                    plan.checker.path,
-                );
-                return { ...broken(), tests, groups: plan.groups };
-            }
-        }
         const checker = await this.checker(plan);
         if (checker) {
             const compileError = await this.compiles(checker);

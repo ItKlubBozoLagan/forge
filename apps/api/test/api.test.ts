@@ -293,6 +293,7 @@ describe("checkers", () => {
         expect(tolerant.output.checker).toBe("built-in float (eps 0.01)");
         expect(tolerant.output.matrix["solutions/float.py"]["samples/1"].verdict).toBe("AC");
         expect(tolerant.output.matrix["solutions/overflow.cpp"]["cluster3/3"].verdict).toBe("WA");
+        expect(tolerant.output.matrix["solutions/overflow.cpp"]["cluster3/3"].message).toMatch(/^token 1: expected \d+, found -?\d+ \(allowed error 0\.01\)$/);
 
         // the judge's default comparison does not accept 2.001 for 2
         await writeFile(ana, id, "problem.yaml", withSolution);
@@ -359,6 +360,9 @@ solutions:
         expect(byPath["sol.py"].score).toBe(100);
         expect(byPath["half.py"].score).toBe(50);
         expect(byPath["wrong.py"].score).toBe(0);
+        // testlib's own comments reach the author
+        expect(result.output.matrix["wrong.py"]["all/3"].message).toContain("expected 2, found 0");
+        expect(result.output.matrix["half.py"]["all/3"].message).toContain("off by one");
         const manual = result.output.tests.find((test: any) => test.id === "all/3");
         expect(manual).toMatchObject({ desc: "smallest input", answerFile: "tests/one.ans", validation: { all: null } });
         expect((await ana.get(`/problems/${id}/blobs/${manual.answerHash}`)).raw.toString()).toBe("2\n");
@@ -607,17 +611,48 @@ print("AC" if actual.split() == expected.split() else "custom:0.5")
         expect(warnings.some((message: string) => message.includes('without "partial:"'))).toBe(true);
     });
 
-    it("refuses a testlib interactor instead of failing at run time", async () => {
+    it("runs a testlib interactor by handing it the test with its length", async () => {
         const id = await createProblem(ana, "tl-interactor", "interactive");
-        await writeFile(ana, id, "interactor.cpp", `#include "testlib.h"\nint main(int argc, char* argv[]) { registerInteraction(argc, argv); quitf(_ok, "ok"); }\n`);
+        await writeFile(ana, id, "interactor.cpp", `#include "testlib.h"
+#include <iostream>
+int main(int argc, char* argv[]) {
+    registerInteraction(argc, argv);
+    int secret = inf.readInt();
+    std::cout << N_MAX << std::endl;
+    for (int asked = 1; asked <= Q_MAX; asked++) {
+        int guess = ouf.readInt(1, (int)N_MAX, "guess");
+        if (guess == secret) {
+            std::cout << "=" << std::endl;
+            quitf(_ok, "found after %d questions", asked);
+        }
+        std::cout << (secret < guess ? "<" : ">") << std::endl;
+    }
+    quitf(_wa, "too many questions");
+}
+`);
         const manifest = await readFile(ana, id, "problem.yaml");
-        await writeFile(ana, id, "problem.yaml", manifest.replace("checker: interactor.py", "checker: interactor.cpp"));
-        const before = harness.runner.calls;
+        await writeFile(ana, id, "problem.yaml", manifest.replace("checker: interactor.py", "checker: interactor.cpp").replace('secret: "WA|TLE"', "secret: WA"));
         const result = await build(ana, id);
-        expect(result.result).toBe("red");
-        expect(result.output.report.issues.map((issue: any) => issue.code)).toContain("interactor.testlib");
-        // nothing was compiled or run for the solutions
-        expect(harness.runner.calls).toBeLessThanOrEqual(before + 1);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        const byPath = Object.fromEntries(result.output.report.solutions.map((solution: any) => [solution.path, solution]));
+        expect(byPath["solutions/binary.py"].score).toBe(1);
+        expect(byPath["solutions/linear.py"].groups.map((group: any) => group.summary)).toEqual(["AC", "WA"]);
+
+        // the judge gets the same framing: exported inputs carry the length the interactor expects
+        const committed = await ana.post(`/problems/${id}/revisions`, { message: "testlib interactor" });
+        await finished(harness, ana, committed.body.buildId);
+        const set = await ana.post(`/workspaces/${ana.workspaceId}/sets`, { name: "Interactive round" });
+        await ana.put(`/sets/${set.body.id}/entries`, { entries: [{ label: "A", problemId: id, revisionId: committed.body.id }] });
+        const files = unzipSync(new Uint8Array((await ana.get(`/sets/${set.body.id}/export`)).raw));
+        expect(Buffer.from(files["A/tests/samples-001.in"]!).toString()).toBe("2\n7\n");
+        expect(JSON.parse(Buffer.from(files["A/problem.json"]!).toString()).inputFraming).toBe("length-prefixed");
+    }, 180_000);
+
+    it("says why an output was rejected", async () => {
+        // the judge's default comparison: Forge compares the texts itself
+        const plain = await build(ana, problemId);
+        expect(plain.output.matrix["solutions/overflow.cpp"]["full/3"].message).toMatch(/^line 1: expected "\d+", found "-?\d+"$/);
     });
 });
 
