@@ -1,5 +1,6 @@
-import { LANGUAGES, MANIFEST_PATH, renderStatement, Sample } from "@forge/core";
+import { LANGUAGES, MANIFEST_PATH, Plan, renderStatement, Sample } from "@forge/core";
 import { FastifyInstance } from "fastify";
+import { zipSync } from "fflate";
 import { isMap, isSeq, parseDocument } from "yaml";
 import { z } from "zod";
 
@@ -76,10 +77,12 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
     server.post("/problems/:id/builds", async (req) => {
         const user = await currentUser(app, req);
         const { problem } = await requireProblem(app, user.id, (req.params as { id: string }).id, "write");
-        const body = z.object({ revision: z.string().optional(), remeasure: z.boolean().default(false) }).safeParse(req.body ?? {});
+        const body = z
+            .object({ revision: z.string().optional(), remeasure: z.boolean().default(false), clean: z.boolean().default(false) })
+            .safeParse(req.body ?? {});
         if (!body.success) throw badRequest("Invalid build request");
         const { tree, revisionId } = await resolveTree(app, problem, body.data.revision);
-        return queue(problem, user.id, "build", tree, revisionId, { remeasure: body.data.remeasure });
+        return queue(problem, user.id, "build", tree, revisionId, { remeasure: body.data.remeasure, clean: body.data.clean });
     });
 
     server.get("/problems/:id/builds", async (req) => {
@@ -116,6 +119,38 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
             name: (build.params as { adhoc?: { name?: string } }).adhoc?.name,
             output: blind ? redact(output) : output,
         };
+    });
+
+    /** Stops a queued or running build. Jobs already handed to the runner finish, but nothing new starts. */
+    server.post("/builds/:id/cancel", async (req) => {
+        const user = await currentUser(app, req);
+        const { build, problem, blind } = await loadBuild(user.id, (req.params as { id: string }).id);
+        if (blind ? build.created_by !== user.id : !can((await requireProblem(app, user.id, problem.id, "participate")).role, "write") && build.created_by !== user.id)
+            throw forbidden();
+        const cancelled = await app.worker.cancel(build.id, `Cancelled by ${user.name}`);
+        if (!cancelled) throw conflict("The build already finished");
+        return { ok: true };
+    });
+
+    /** The inputs and answers a build produced, as a zip. */
+    server.get("/builds/:id/tests.zip", async (req, reply) => {
+        const user = await currentUser(app, req);
+        const { build, problem, blind } = await loadBuild(user.id, (req.params as { id: string }).id);
+        if (blind) throw notFound("Build not found");
+        const output = build.report as BuildOutput | null;
+        if (!output || !Array.isArray(output.tests)) throw conflict("The build has no tests yet");
+        const files: Record<string, Uint8Array> = {};
+        for (const test of output.tests) {
+            const stem = `${test.group}/${String(test.index).padStart(3, "0")}`;
+            for (const [hash, extension] of [[test.inputHash, "in"], [test.answerHash, "out"]] as const) {
+                const data = hash ? await app.blobs.get(problem.workspace_id, hash) : undefined;
+                if (data) files[`${stem}.${extension}`] = new Uint8Array(data);
+            }
+        }
+        return reply
+            .header("content-type", "application/zip")
+            .header("content-disposition", `attachment; filename="${problem.name}-tests-build${build.id}.zip"`)
+            .send(Buffer.from(zipSync(files, { level: 6 })));
     });
 
     /** Timing samples behind a build's runs, grouped by the hardware they were measured on. */
@@ -222,6 +257,46 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
         return { version: result.version };
     });
 
+    /**
+     * Sample tests for a statement: from the latest finished build of exactly this tree, or
+     * (for a preview while editing) of the problem at all.
+     */
+    const samplesOf = async (problem: ProblemRow, tree: Tree, plan: Plan, lenient: boolean) => {
+        let [build] = await app.sql<{ report: BuildOutput }[]>`
+            select report from builds
+            where problem_id = ${problem.id} and kind = 'build' and status = 'done' and tree = ${app.sql.json(tree as never)}
+            order by id desc limit 1`;
+        const built = build !== undefined;
+        if (!build && lenient)
+            [build] = await app.sql<{ report: BuildOutput }[]>`
+                select report from builds where problem_id = ${problem.id} and kind = 'build' and status = 'done' and revision_id is null
+                order by id desc limit 1`;
+        const samples: Sample[] = [];
+        const sampleGroups = new Set(plan.groups.filter((group) => group.sample).map((group) => group.name));
+        for (const test of build?.report.tests ?? []) {
+            if (!sampleGroups.has(test.group) || !test.inputHash || !test.answerHash) continue;
+            samples.push({
+                input: await app.blobs.text(problem.workspace_id, test.inputHash),
+                output: await app.blobs.text(problem.workspace_id, test.answerHash),
+            });
+        }
+        return { samples, built };
+    };
+
+    /** Renders statement text that is not saved yet, against the working copy's problem.yaml. */
+    server.post("/problems/:id/statement/preview", async (req) => {
+        const user = await currentUser(app, req);
+        const { problem } = await requireProblem(app, user.id, (req.params as { id: string }).id, "read");
+        const body = z.object({ markdown: z.string().max(512 * 1024) }).safeParse(req.body);
+        if (!body.success) throw badRequest("The statement text is required");
+        const engine = new Engine({ workspaceId: problem.workspace_id, tree: problem.draft_tree, blobs: app.blobs, sql: app.sql, runner: app.runner, scheduler: app.scheduler });
+        const { plan } = await engine.plan();
+        if (!plan) throw conflict("problem.yaml does not parse, so the statement cannot be rendered");
+        const { samples, built } = await samplesOf(problem, problem.draft_tree, plan, true);
+        const rendered = renderStatement(body.data.markdown, plan.manifest, Object.fromEntries(plan.groups.map((group) => [group.name, group.constraints])), samples);
+        return { markdown: rendered.markdown, unresolved: rendered.unresolved, samplesBuilt: built };
+    });
+
     /** The statement with constraints, limits and samples filled in from the package. */
     server.get("/problems/:id/statement", async (req) => {
         const user = await currentUser(app, req);
@@ -240,20 +315,7 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
         const language = query.lang && languages.includes(query.lang) ? query.lang : (languages.includes("en") ? "en" : languages[0]);
         if (!plan || !language) return { languages, language: null, markdown: "", unresolved: [], samplesBuilt: false };
 
-        // samples come from the latest finished build of exactly this tree
-        const [build] = await app.sql<{ report: BuildOutput }[]>`
-            select report from builds
-            where problem_id = ${problem.id} and kind = 'build' and status = 'done' and tree = ${app.sql.json(target.tree as never)}
-            order by id desc limit 1`;
-        const samples: Sample[] = [];
-        const sampleGroups = new Set(plan.groups.filter((group) => group.sample).map((group) => group.name));
-        for (const test of build?.report.tests ?? []) {
-            if (!sampleGroups.has(test.group) || !test.inputHash || !test.answerHash) continue;
-            samples.push({
-                input: await app.blobs.text(problem.workspace_id, test.inputHash),
-                output: await app.blobs.text(problem.workspace_id, test.answerHash),
-            });
-        }
+        const { samples, built } = await samplesOf(problem, target.tree, plan, false);
         const text = await app.blobs.text(problem.workspace_id, target.tree[plan.statements[language]!]!.hash);
         const rendered = renderStatement(text, plan.manifest, Object.fromEntries(plan.groups.map((group) => [group.name, group.constraints])), samples);
         return {
@@ -261,7 +323,9 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
             language,
             markdown: rendered.markdown,
             unresolved: rendered.unresolved,
-            samplesBuilt: build !== undefined,
+            samplesBuilt: built,
+            // what the editor needs; blind testers only get the rendered text
+            ...(can(role, "read") ? { path: plan.statements[language], source: text } : {}),
             limits: plan.manifest.limits,
             groups: plan.groups.map((group) => ({ name: group.name, points: group.points, sample: group.sample })),
         };

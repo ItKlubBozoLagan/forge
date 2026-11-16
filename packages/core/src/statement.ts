@@ -15,19 +15,20 @@ const scientific = (value: number): string => {
     return mantissa === 1 ? `${sign}10^{${exponent}}` : `${sign}${mantissa} \\cdot 10^{${exponent}}`;
 };
 
-const samplesMarkdown = (samples: Sample[]): string =>
-    samples
-        .map(
-            (sample, index) =>
-                `### Sample ${index + 1}\n\n**Input**\n\n\`\`\`\n${sample.input.trimEnd()}\n\`\`\`\n\n**Output**\n\n\`\`\`\n${sample.output.trimEnd()}\n\`\`\``,
-        )
-        .join("\n\n");
+/** A sample with no output (interactive tasks have none) shows its input only. */
+const sampleMarkdown = (sample: Sample, index: number): string => {
+    const input = `### Sample ${index + 1}\n\n**Input**\n\n\`\`\`\n${sample.input.trimEnd()}\n\`\`\``;
+    return sample.output.trim() === "" ? input : `${input}\n\n**Output**\n\n\`\`\`\n${sample.output.trimEnd()}\n\`\`\``;
+};
+
+const samplesMarkdown = (samples: Sample[]): string => samples.map(sampleMarkdown).join("\n\n");
 
 /**
  * Statements never hard-code a limit. `{{N.max}}` / `{{N.min}}` read the constraints from
  * problem.yaml (`{{N.max|raw}}` skips the 2·10^5 formatting), `{{group.small.N.max}}` reads
  * a group's effective constraint, `{{limits.time}}` / `{{limits.memory}}` the limits, and
- * `{{samples}}` is replaced by the sample tests (appended at the end when absent).
+ * `{{samples}}` is replaced by the sample tests (appended at the end when absent). `{{sample.2}}`
+ * places one sample, so an explanation can follow each of them.
  */
 export const renderStatement = (
     markdown: string,
@@ -42,6 +43,19 @@ export const renderStatement = (
         if (path === "samples") {
             sawSamples = true;
             return samplesMarkdown(samples);
+        }
+        const single = /^sample\.(\d+)$/.exec(path ?? "");
+        if (single) {
+            sawSamples = true;
+            const index = Number(single[1]) - 1;
+            // samples only exist after a build; until then the placeholder renders as nothing
+            if (samples.length === 0) return "";
+            const sample = samples[index];
+            if (!sample) {
+                unresolved.push(expression);
+                return whole;
+            }
+            return sampleMarkdown(sample, index);
         }
         if (path === "limits.time") {
             const ms = manifest.limits.time_ms;

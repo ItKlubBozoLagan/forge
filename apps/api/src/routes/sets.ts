@@ -150,13 +150,17 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 files[`${base}statement/${language}.md`] = strToU8(renderStatement(text, plan.manifest, constraints, samples).markdown);
                 statements[language] = `statement/${language}.md`;
             }
+            // images and other files a statement links to
+            for (const [path, entry] of Object.entries(tree))
+                if (path.startsWith("statement/") && !path.endsWith(".md")) files[`${base}${path}`] = await read(entry.hash);
             let checker;
-            if (plan.checker) {
-                const program = await engine.program(plan.checker.path);
-                const name = `checker.${plan.checker.path.split(".").pop()}`;
-                // the constraints prelude is baked in, so the judge needs nothing else
-                files[`${base}${name}`] = strToU8(withPrelude(program.source, program.language, plan.manifest.constraints));
-                checker = { path: name, language: program.language };
+            const checkerProgram = await engine.checker(plan);
+            if (checkerProgram) {
+                const extension = plan.checker ? plan.checker.path.split(".").pop() : "py";
+                const name = `checker.${extension}`;
+                // constraints, testlib and built-in checkers are baked in, so the judge needs nothing else
+                files[`${base}${name}`] = strToU8(checkerProgram.source);
+                checker = { path: name, language: checkerProgram.language };
             }
             // kontestis stores a reference solution with every problem
             let solution = null;

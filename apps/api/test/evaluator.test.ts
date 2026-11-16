@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { builtinCheckerSource } from "@forge/core";
+
 import { loadConfig } from "../src/config";
+import { withTestlib } from "../src/engine/testlib";
 import { EvaluatorRunner } from "../src/runner/evaluator";
 
 // Needs a kontestis evaluator consuming EVALUATOR_QUEUE_KEY; run with FORGE_TEST_EVALUATOR=1.
@@ -158,4 +161,58 @@ while True:
             ["b", "accepted"],
         ]);
     });
+
+    it("runs testlib generators and checkers and the built-in float checker in the sandbox", async () => {
+        const generator = withTestlib(
+            `#include "testlib.h"\n#include <cstdlib>\nint main(int argc, char* argv[]) {\n    registerGen(argc, argv, 1);\n    println(rnd.next(1, atoi(argv[1])));\n}\n`,
+            "cpp",
+            "generator",
+        );
+        const generated = await runner.run({
+            program: { language: "cpp", source: generator },
+            inputs: [
+                { id: "a", stdin: "50 1\n" },
+                { id: "b", stdin: "50 1\n" },
+                { id: "c", stdin: "1 9\n" },
+            ],
+            checking: "capture",
+            timeLimitMs: 5000,
+            memoryLimitMb: 512,
+        });
+        expect(generated.compileError).toBeUndefined();
+        expect(generated.runs.map((run) => run.status)).toEqual(["accepted", "accepted", "accepted"]);
+        expect(generated.runs[0]!.stdout).toBe(generated.runs[1]!.stdout);
+        expect(generated.runs[2]!.stdout?.trim()).toBe("1");
+
+        const checker = withTestlib(
+            `#include "testlib.h"\nint main(int argc, char* argv[]) {\n    registerTestlibCmd(argc, argv);\n    int expected = ans.readInt(), found = ouf.readInt();\n    if (expected == found) quitf(_ok, "correct");\n    if (found == expected + 1) quitp(0.5, "off by one");\n    quitf(_wa, "expected %d, found %d", expected, found);\n}\n`,
+            "cpp",
+            "checker",
+        );
+        const checked = await runner.check({
+            checking: { language: "cpp", source: checker },
+            inputs: [
+                { id: "right", stdin: "2\n", expected: "4\n", output: "4\n" },
+                { id: "close", stdin: "2\n", expected: "4\n", output: "5\n" },
+                { id: "wrong", stdin: "2\n", expected: "4\n", output: "9\n" },
+                { id: "empty", stdin: "2\n", expected: "4\n", output: "" },
+            ],
+        });
+        expect(checked.compileError).toBeUndefined();
+        expect(checked.runs.map((run) => [run.status, run.data])).toEqual([
+            ["accepted", undefined],
+            ["custom", "partial:0.500000"],
+            ["wrong_answer", undefined],
+            ["wrong_answer", undefined],
+        ]);
+
+        const float = await runner.check({
+            checking: { language: "python", source: builtinCheckerSource("float", 1e-3) },
+            inputs: [
+                { id: "near", stdin: "", expected: "1.0 yes\n", output: "1.0004 yes\n" },
+                { id: "far", stdin: "", expected: "1.0 yes\n", output: "1.1 yes\n" },
+            ],
+        });
+        expect(float.runs.map((run) => run.status)).toEqual(["accepted", "wrong_answer"]);
+    }, 120_000);
 });

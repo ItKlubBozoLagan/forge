@@ -1,18 +1,19 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Gauge, XCircle } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, Download, Gauge, RotateCcw, Square, XCircle } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { IssueList } from "../../../components/IssueList";
 import { api } from "../../../lib/api";
+import { downloadFrom } from "../../../lib/files";
 import { formatDate, formatDuration, plural } from "../../../lib/format";
 import { useTicker } from "../../../lib/hooks";
-import { can, isActive, keys, useBuild } from "../../../lib/queries";
-import type { BuildOutput, Problem, Revision } from "../../../lib/types";
+import { can, isActive, keys, useBuild, useMe } from "../../../lib/queries";
+import type { BuildOutput, Health, Problem, Revision } from "../../../lib/types";
 import { BuildBadge } from "../../../ui/Badge";
 import { Button } from "../../../ui/Button";
 import { cx } from "../../../ui/cx";
-import { Card, ErrorNotice, Loading, Progress } from "../../../ui/misc";
+import { Card, ErrorNotice, Loading, Notice, Progress } from "../../../ui/misc";
 import { useToast } from "../../../ui/Toast";
 import { CalibrationCard } from "./Calibration";
 import { KillCard } from "./Kills";
@@ -28,6 +29,42 @@ const PHASES: Record<string, string> = {
     solutions: "Running solutions",
 };
 
+/** What judges this package: task type, checker or interactor, validator and limits. */
+const BuildTools = ({ output }: { output: BuildOutput }) => {
+    const type = output.type ?? "batch";
+    const interactive = type === "interactive";
+    const item = (label: string, value: string, mono = true) => (
+        <span className="min-w-0">
+            <span className="text-muted">{label} </span>
+            <span className={cx("break-all", mono && "font-mono text-[12.5px]")}>{value}</span>
+        </span>
+    );
+    return (
+        <div
+            data-testid="build-tools"
+            className="flex flex-wrap items-baseline gap-x-4 gap-y-1 rounded-lg border border-line bg-surface px-3 py-2 text-sm"
+        >
+            {item("type", type)}
+            {output.checker
+                ? item(interactive ? "interactor" : "checker", output.checker)
+                : item(
+                      interactive ? "interactor" : "checker",
+                      interactive
+                          ? "none"
+                          : "compares output with the judge's default comparison",
+                      false,
+                  )}
+            {item("validator", output.validator ?? "none")}
+            {output.limits &&
+                item(
+                    "limits",
+                    `${output.limits.time_ms} ms, ${output.limits.memory_mb} MB`,
+                    false,
+                )}
+        </div>
+    );
+};
+
 export const BuildDetail = ({
     problem,
     buildId,
@@ -39,11 +76,22 @@ export const BuildDetail = ({
 }) => {
     const build = useBuild<BuildOutput>(buildId);
     const [openTest, setOpenTest] = useState<string>();
-    const [remeasuring, setRemeasuring] = useState(false);
+    const [starting, setStarting] = useState<"remeasure" | "clean">();
+    const [cancelling, setCancelling] = useState(false);
+    const [downloading, setDownloading] = useState(false);
     const queryClient = useQueryClient();
     const navigate = useNavigate();
     const toast = useToast();
-    useTicker(isActive(build.data?.status));
+    const me = useMe();
+    const active = isActive(build.data?.status);
+    useTicker(active);
+    // while the build waits, check that some runner is answering on its queue
+    const health = useQuery({
+        queryKey: ["health", "runner"],
+        queryFn: () => api.get<Health>("/health?runner=1"),
+        enabled: active,
+        refetchInterval: active ? 15_000 : false,
+    });
 
     if (build.isPending) return <Loading label="Loading build" />;
     if (build.error) return <ErrorNotice error={build.error} />;
@@ -53,12 +101,15 @@ export const BuildDetail = ({
     const revision = revisions?.find((item) => item.id === data.revisionId);
     const errors = report?.issues.filter((issue) => issue.severity === "error").length ?? 0;
     const warnings = report?.issues.filter((issue) => issue.severity === "warning").length ?? 0;
+    const writable = can(problem.role, "write");
+    const cancelled = data.status === "failed" && !!data.error?.startsWith("Cancelled by");
+    const mayCancel = writable || (!!me.data && me.data.user.id === data.createdBy);
 
-    const remeasure = async () => {
-        setRemeasuring(true);
+    const start = async (mode: "remeasure" | "clean") => {
+        setStarting(mode);
         try {
             const result = await api.post<{ id: string }>(`/problems/${problem.id}/builds`, {
-                remeasure: true,
+                [mode]: true,
                 ...(data.revisionId ? { revision: data.revisionId } : {}),
             });
             await queryClient.invalidateQueries({ queryKey: keys.builds(problem.id, "build") });
@@ -66,7 +117,33 @@ export const BuildDetail = ({
         } catch (error) {
             toast.error(error);
         } finally {
-            setRemeasuring(false);
+            setStarting(undefined);
+        }
+    };
+
+    const cancel = async () => {
+        setCancelling(true);
+        try {
+            await api.post(`/builds/${data.id}/cancel`);
+            await Promise.all([
+                queryClient.invalidateQueries({ queryKey: keys.build(data.id) }),
+                queryClient.invalidateQueries({ queryKey: keys.builds(problem.id, "build") }),
+            ]);
+        } catch (error) {
+            toast.error(error);
+        } finally {
+            setCancelling(false);
+        }
+    };
+
+    const downloadTests = async () => {
+        setDownloading(true);
+        try {
+            await downloadFrom(`/builds/${data.id}/tests.zip`, `${problem.name}-tests.zip`);
+        } catch (error) {
+            toast.error(error);
+        } finally {
+            setDownloading(false);
         }
     };
 
@@ -85,19 +162,64 @@ export const BuildDetail = ({
                     {formatDate(data.startedAt ?? data.createdAt)} ·{" "}
                     {formatDuration(data.startedAt, data.finishedAt)}
                 </span>
-                {can(problem.role, "write") && !isActive(data.status) && (
-                    <Button
-                        size="sm"
-                        className="ml-auto"
-                        icon={<Gauge className="size-3.5" />}
-                        pending={remeasuring}
-                        onClick={remeasure}
-                        title="Run every solution again to collect more timing samples"
-                    >
-                        Re-measure
-                    </Button>
-                )}
+                <div className="ml-auto flex flex-wrap gap-2">
+                    {output && output.tests.length > 0 && (
+                        <Button
+                            size="sm"
+                            icon={<Download className="size-3.5" />}
+                            pending={downloading}
+                            onClick={downloadTests}
+                            title="Download every input and answer of this build as a zip"
+                        >
+                            Download tests
+                        </Button>
+                    )}
+                    {writable && !active && (
+                        <>
+                            <Button
+                                size="sm"
+                                icon={<Gauge className="size-3.5" />}
+                                pending={starting === "remeasure"}
+                                disabled={!!starting}
+                                onClick={() => start("remeasure")}
+                                title="Run every solution again to collect more timing samples"
+                            >
+                                Re-measure
+                            </Button>
+                            <Button
+                                size="sm"
+                                icon={<RotateCcw className="size-3.5" />}
+                                pending={starting === "clean"}
+                                disabled={!!starting}
+                                onClick={() => start("clean")}
+                                title="Ignore every cached step: generate the tests, answers and runs again"
+                            >
+                                Rebuild from scratch
+                            </Button>
+                        </>
+                    )}
+                    {active && mayCancel && (
+                        <Button
+                            size="sm"
+                            variant="danger"
+                            icon={<Square className="size-3.5" />}
+                            pending={cancelling}
+                            onClick={cancel}
+                            title="Stop this build: runs already handed to the runner finish, nothing new starts"
+                        >
+                            Cancel
+                        </Button>
+                    )}
+                </div>
             </div>
+
+            {active && health.data?.runner.alive === false && (
+                <Notice tone="warning">
+                    No evaluator is answering on queue{" "}
+                    <span className="font-mono">{health.data.runner.pool}</span>, so the build
+                    will wait until one starts.
+                </Notice>
+            )}
 
             {isActive(data.status) && (
                 <div className="rounded-lg border border-line bg-surface p-3">
@@ -123,8 +245,15 @@ export const BuildDetail = ({
                 </div>
             )}
 
-            {data.status === "failed" && (
-                <ErrorNotice error={new Error(data.error ?? "The build failed unexpectedly")} />
+            {cancelled ? (
+                <Notice>
+                    <span data-testid="build-cancelled">{data.error}.</span> Start a new build when
+                    you are ready.
+                </Notice>
+            ) : (
+                data.status === "failed" && (
+                    <ErrorNotice error={new Error(data.error ?? "The build failed unexpectedly")} />
+                )
             )}
 
             {report && output && (
@@ -161,6 +290,8 @@ export const BuildDetail = ({
                             <span className="font-mono">{output.runner.hardwareClass}</span>
                         </span>
                     </div>
+
+                    <BuildTools output={output} />
 
                     {report.issues.length > 0 && <IssueList issues={report.issues} />}
 

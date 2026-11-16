@@ -1,6 +1,13 @@
-import { Issue, MANIFEST_PATH, parseManifest, planBuild } from "@forge/core";
+import {
+    Issue,
+    MANIFEST_PATH,
+    parseManifest,
+    planBuild,
+    removeReferences,
+    renameReferences,
+} from "@forge/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { FilePlus2, Save } from "lucide-react";
+import { FileDiff, FilePlus2, Save, Upload } from "lucide-react";
 import {
     FormEvent,
     useCallback,
@@ -10,20 +17,24 @@ import {
     useRef,
     useState,
 } from "react";
-import { BlockerFunction, useBlocker, useSearchParams } from "react-router";
+import { BlockerFunction, Link, useBlocker, useSearchParams } from "react-router";
 
 import { CodeEditor } from "../../components/CodeEditor";
 import { IssueList } from "../../components/IssueList";
 import { api, ApiError, decodeText, encodeText, isBinary, q } from "../../lib/api";
 import { formatBytes } from "../../lib/format";
+import { deleteFile, followManifest, renameFile } from "../../lib/manifest";
 import { can, keys, useTree } from "../../lib/queries";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
+import { cx } from "../../ui/cx";
 import { ConfirmDialog, Dialog } from "../../ui/Dialog";
 import { Field, Input } from "../../ui/Field";
 import { EmptyState, ErrorNotice, Loading, Notice, Spinner } from "../../ui/misc";
 import { useToast } from "../../ui/Toast";
 import { FileTree } from "./FileTree";
+import { DownloadPackageButton, useBulkFiles } from "./files/BulkFiles";
+import { useLineComments } from "./files/LineComments";
 import { useProblemContext } from "./ProblemLayout";
 
 /** Files above this size are not loaded into the editor. */
@@ -227,6 +238,27 @@ export const FilesTab = () => {
         }
     }, [doc?.path, doc?.kind, deferredText, paths]);
 
+    const bulk = useBulkFiles({
+        problemId: problem.id,
+        files,
+        writable,
+        onReloadTree: refreshTree,
+        onApplied: async (changed, deleted) => {
+            await refreshTree();
+            const current = docRef.current;
+            if (!current || !changed.includes(current.path)) return;
+            if (deleted) {
+                setDoc(undefined);
+                setParams({}, { replace: true });
+            } else if (!isDirty(current)) void load(current.path);
+        },
+    });
+    const comments = useLineComments({
+        problemId: problem.id,
+        path: doc?.kind === "text" ? doc.path : undefined,
+        enabled: can(problem.role, "read"),
+    });
+
     if (tree.isPending) return <Loading />;
     if (tree.error) return <ErrorNotice error={tree.error} />;
 
@@ -242,11 +274,47 @@ export const FilesTab = () => {
 
     return (
         <div className="grid gap-3 md:grid-cols-[240px_minmax(0,1fr)]">
-            <aside className="min-w-0 rounded-lg border border-line bg-surface p-1.5 md:max-h-[calc(100dvh-220px)] md:overflow-auto">
-                <div className="mb-1 flex items-center justify-between px-1">
+            <aside
+                {...bulk.dropProps}
+                className={cx(
+                    "min-w-0 rounded-lg border border-line bg-surface p-1.5 md:max-h-[calc(100dvh-220px)] md:overflow-auto",
+                    bulk.dragging && "border-accent bg-accent-soft",
+                )}
+            >
+                <div className="mb-1 flex items-center justify-between gap-1 px-1">
                     <span className="text-xs font-medium text-muted">Files</span>
-                    {newFileButton}
+                    <div className="flex gap-1">
+                        {newFileButton}
+                        {writable && (
+                            <Button
+                                size="sm"
+                                aria-label="Upload files"
+                                title="Upload files, a folder or a zip"
+                                icon={<Upload className="size-3.5" />}
+                                onClick={bulk.openUpload}
+                            />
+                        )}
+                        <DownloadPackageButton
+                            problemId={problem.id}
+                            name={problem.name}
+                            iconOnly
+                        />
+                    </div>
                 </div>
+                {bulk.dragging && (
+                    <p className="px-1 pb-1 text-xs text-accent">
+                        Drop to upload. Drop on a folder to upload into it.
+                    </p>
+                )}
+                {problem.dirty && problem.head && (
+                    <Link
+                        to={`/p/${problem.id}/revisions/compare${q({ from: problem.head.id, to: "working" })}`}
+                        className="mb-1 flex items-center gap-1 px-1 text-xs text-accent hover:underline"
+                    >
+                        <FileDiff className="size-3.5" aria-hidden />
+                        Changes since revision {problem.head.number}
+                    </Link>
+                )}
                 {files.length === 0 ? (
                     <p className="px-2 py-4 text-[13px] text-muted">
                         No files yet.
@@ -261,6 +329,7 @@ export const FilesTab = () => {
                         onSelect={requestOpen}
                         onRename={setRenaming}
                         onDelete={setDeleting}
+                        onDeleteFolder={bulk.deleteFolder}
                     />
                 )}
             </aside>
@@ -285,6 +354,7 @@ export const FilesTab = () => {
                             {!writable && <Badge>read-only</Badge>}
                             {loading && <Spinner label="Loading file" />}
                             <div className="ml-auto flex gap-2">
+                                {doc?.kind === "text" && doc.path === selected && comments.action}
                                 {writable && doc?.kind === "text" && (
                                     <Button
                                         variant={dirty ? "primary" : "secondary"}
@@ -322,6 +392,7 @@ export const FilesTab = () => {
                                 language={doc.path}
                                 value={doc.text}
                                 readOnly={!writable}
+                                {...comments.editorProps}
                                 onChange={(value) =>
                                     setDoc((current) =>
                                         current ? { ...current, text: value } : current,
@@ -330,6 +401,7 @@ export const FilesTab = () => {
                                 className="h-[calc(100dvh-300px)] min-h-[360px] rounded-lg border border-line"
                             />
                         )}
+                        {doc && doc.path === selected && doc.kind === "text" && comments.panel}
                         {manifestIssues && (
                             <div>
                                 <h3 className="mb-1 text-xs font-medium text-muted">
@@ -433,6 +505,9 @@ export const FilesTab = () => {
                 }
             />
 
+            {bulk.dialogs}
+            {comments.dialog}
+
             <NewFileDialog
                 open={creating}
                 onClose={() => setCreating(false)}
@@ -451,14 +526,21 @@ export const FilesTab = () => {
                 paths={paths}
                 onClose={() => setRenaming(undefined)}
                 onRename={async (from, to) => {
-                    await api.post(`/problems/${problem.id}/rename`, { from, to });
-                    await refreshTree();
+                    // problem.yaml follows the rename in the same atomic change
+                    const manifest = await renameFile(problem.id, files, from, to).finally(
+                        refreshTree,
+                    );
+                    setDoc((current) =>
+                        followManifest(current, manifest, (text) =>
+                            renameReferences(text, from, to),
+                        ),
+                    );
                     setRenaming(undefined);
                     if (from === selected) {
                         setDoc((current) => (current ? { ...current, path: to } : current));
                         setParams({ path: to }, { replace: true });
                     }
-                    toast.success(`Renamed to ${to}`);
+                    toast.success(`Renamed to ${to}${manifest ? "; problem.yaml updated" : ""}`);
                 }}
             />
 
@@ -469,20 +551,25 @@ export const FilesTab = () => {
                 message={
                     <>
                         Delete <span className="font-mono">{deleting}</span> from the working copy?
-                        Committed revisions keep their copy.
+                        Committed revisions keep their copy. References to it in problem.yaml are
+                        removed.
                     </>
                 }
                 confirmLabel="Delete"
                 danger
                 onConfirm={async () => {
                     const path = deleting!;
-                    await api.del(`/problems/${problem.id}/file${q({ path })}`);
+                    const manifest = await deleteFile(problem.id, files, path).finally(
+                        refreshTree,
+                    );
+                    setDoc((current) =>
+                        followManifest(current, manifest, (text) => removeReferences(text, path)),
+                    );
                     if (path === selected) {
                         setDoc(undefined);
                         setParams({}, { replace: true });
                     }
-                    await refreshTree();
-                    toast.success(`Deleted ${path}`);
+                    toast.success(`Deleted ${path}${manifest ? "; problem.yaml updated" : ""}`);
                 }}
             />
         </div>
@@ -634,7 +721,7 @@ const RenameDialog = ({
                     )}
                 </Field>
                 <p className="text-xs text-muted">
-                    References in problem.yaml are not updated automatically.
+                    References to it in problem.yaml are updated too.
                 </p>
                 {error !== undefined && <ErrorNotice error={error} />}
                 <div className="flex justify-end gap-2">

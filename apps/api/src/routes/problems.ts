@@ -1,5 +1,6 @@
 import { TEMPLATE_FORMATS, templateFiles } from "@forge/core";
 import { FastifyInstance } from "fastify";
+import { zipSync } from "fflate";
 import { z } from "zod";
 
 import { App } from "../app";
@@ -50,6 +51,21 @@ export const resolveTree = async (app: App, problem: ProblemRow, revision: unkno
         select id, tree from revisions where id = ${String(revision)} and problem_id = ${problem.id}`;
     if (!row) throw notFound("Revision not found");
     return { tree: row.tree, revisionId: row.id };
+};
+
+/**
+ * Blobs are stored per workspace, but access to a problem only covers its own content: files
+ * of its working copy and revisions, what its builds produced, and what was uploaded for it.
+ */
+export const blobBelongs = async (app: App, problem: ProblemRow, hash: string): Promise<boolean> => {
+    if (!/^[0-9a-f]{64}$/.test(hash)) return false;
+    if (Object.values(problem.draft_tree).some((entry) => entry.hash === hash)) return true;
+    const pattern = `%${hash}%`;
+    const found = await app.sql`
+        select 1 where exists (select 1 from problem_uploads where problem_id = ${problem.id} and hash = ${hash})
+            or exists (select 1 from revisions where problem_id = ${problem.id} and tree::text like ${pattern})
+            or exists (select 1 from builds where problem_id = ${problem.id} and (report::text like ${pattern} or tree::text like ${pattern}))`;
+    return found.length > 0;
 };
 
 export const problemRoutes = (server: FastifyInstance, app: App) => {
@@ -188,10 +204,32 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         return reply.header("content-type", "application/octet-stream").header("etag", entry.hash).send(data);
     });
 
+    /** The package as a zip: the working copy, or a revision. */
+    server.get("/problems/:id/archive", async (req, reply) => {
+        const user = await currentUser(app, req);
+        const { problem } = await requireProblem(app, user.id, (req.params as { id: string }).id, "read");
+        const { tree, revisionId } = await resolveTree(app, problem, (req.query as { revision?: string }).revision);
+        const files: Record<string, Uint8Array> = {};
+        for (const [path, entry] of Object.entries(tree)) {
+            const data = await app.blobs.get(problem.workspace_id, entry.hash);
+            if (data) files[path] = new Uint8Array(data);
+        }
+        let suffix = "";
+        if (revisionId) {
+            const [revision] = await app.sql<{ number: number }[]>`select number from revisions where id = ${revisionId}`;
+            suffix = `-r${revision?.number ?? revisionId}`;
+        }
+        return reply
+            .header("content-type", "application/zip")
+            .header("content-disposition", `attachment; filename="${problem.name}${suffix}.zip"`)
+            .send(Buffer.from(zipSync(files, { level: 6 })));
+    });
+
     server.get("/problems/:id/blobs/:hash", async (req, reply) => {
         const user = await currentUser(app, req);
         const { id, hash } = req.params as { id: string; hash: string };
         const { problem } = await requireProblem(app, user.id, id, "read");
+        if (!(await blobBelongs(app, problem, hash))) throw notFound("Blob not found");
         const data = await app.blobs.get(problem.workspace_id, hash);
         if (!data) throw notFound("Blob not found");
         return reply.header("content-type", "application/octet-stream").send(data);
@@ -202,7 +240,9 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         const user = await currentUser(app, req);
         const { problem } = await requireProblem(app, user.id, (req.params as { id: string }).id, "write");
         if (!Buffer.isBuffer(req.body)) throw badRequest("Send the content as application/octet-stream");
-        return app.blobs.put(problem.workspace_id, req.body);
+        const entry = await app.blobs.put(problem.workspace_id, req.body);
+        await app.sql`insert into problem_uploads (problem_id, hash) values (${problem.id}, ${entry.hash}) on conflict do nothing`;
+        return entry;
     });
 
     server.put("/problems/:id/file", async (req) => {
@@ -268,7 +308,7 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         for (const change of body.data.changes) {
             if (!validPath(change.path)) throw badRequest(`Invalid file path "${change.path}"`);
             if (change.hash === null) continue;
-            const size = await app.blobs.has(problem.workspace_id, change.hash);
+            const size = (await blobBelongs(app, problem, change.hash)) ? await app.blobs.has(problem.workspace_id, change.hash) : undefined;
             if (size === undefined) throw badRequest(`Content of ${change.path} has not been uploaded`, { path: change.path });
             entries.set(change.path, { hash: change.hash, size });
         }

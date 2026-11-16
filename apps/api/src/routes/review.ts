@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { App } from "../app";
+import { resolveTree } from "./problems";
 import { badRequest, can, currentUser, forbidden, notFound, requireProblem } from "../http";
 
 export const reviewRoutes = (server: FastifyInstance, app: App) => {
@@ -32,6 +33,11 @@ export const reviewRoutes = (server: FastifyInstance, app: App) => {
             .safeParse(req.body);
         if (!body.success) throw badRequest("A comment is required");
         if (body.data.path && !can(role, "read")) throw forbidden();
+        // an anchor has to point at something that exists in this problem
+        if (body.data.path || body.data.revision) {
+            const { tree } = await resolveTree(app, problem, body.data.revision);
+            if (body.data.path && !tree[body.data.path]) throw badRequest(`${body.data.path} is not a file of this problem`);
+        }
         const thread = await app.sql.begin(async (tx) => {
             const [created] = await tx<{ id: string }[]>`
                 insert into threads (problem_id, revision_id, path, line, created_by)

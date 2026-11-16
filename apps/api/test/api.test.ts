@@ -282,6 +282,172 @@ print("AC" if actual == expected else "custom:partial:0.25" if abs(actual - expe
     });
 });
 
+describe("checkers", () => {
+    it("ships built-in checkers, here one that tolerates floating point error", async () => {
+        const id = await createProblem(ana, "floaty", "honi");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "solutions/float.py", "n, k = map(int, input().split())\na = list(map(int, input().split()))\nprint(sum(1 for i in range(n) for j in range(i + 1, n) if a[i] + a[j] == k) + 0.001)\n");
+        const withSolution = manifest.replace("solutions:\n", "solutions:\n  - { path: solutions/float.py, expect: { samples: AC, cluster1: AC, cluster2: AC } }\n");
+        await writeFile(ana, id, "problem.yaml", withSolution.replace("validator: validator.py", "validator: validator.py\nchecker: { builtin: float, eps: 0.01 }"));
+        const tolerant = await build(ana, id);
+        expect(tolerant.output.checker).toBe("built-in float (eps 0.01)");
+        expect(tolerant.output.matrix["solutions/float.py"]["samples/1"].verdict).toBe("AC");
+        expect(tolerant.output.matrix["solutions/overflow.cpp"]["cluster3/3"].verdict).toBe("WA");
+
+        // the judge's default comparison does not accept 2.001 for 2
+        await writeFile(ana, id, "problem.yaml", withSolution);
+        const strict = await build(ana, id);
+        expect(strict.output.checker).toBeUndefined();
+        expect(strict.output.matrix["solutions/float.py"]["samples/1"].verdict).toBe("WA");
+    });
+
+    it("runs testlib generators, validators and checkers, and uses hand-written answers", async () => {
+        const id = await createProblem(ana, "polygon-style", "empty");
+        await writeFile(ana, id, "gen.cpp", `#include "testlib.h"
+#include <cstdlib>
+int main(int argc, char* argv[]) {
+    registerGen(argc, argv, 1);
+    println(rnd.next(1, atoi(argv[1])));
+}
+`);
+        await writeFile(ana, id, "validator.cpp", `#include "testlib.h"
+int main(int argc, char* argv[]) {
+    registerValidation(argc, argv);
+    inf.readInt(1, (int)N_MAX, "n");
+    inf.readEoln();
+    inf.readEof();
+}
+`);
+        await writeFile(ana, id, "checker.cpp", `#include "testlib.h"
+int main(int argc, char* argv[]) {
+    registerTestlibCmd(argc, argv);
+    int expected = ans.readInt(), found = ouf.readInt();
+    if (expected == found) quitf(_ok, "correct");
+    if (found == expected + 1) quitp(0.5, "off by one");
+    quitf(_wa, "expected %d, found %d", expected, found);
+}
+`);
+        await writeFile(ana, id, "tests/one.in", "1\n");
+        await writeFile(ana, id, "tests/one.ans", "2\n");
+        await writeFile(ana, id, "tests/big.in", "500\n");
+        await writeFile(ana, id, "sol.py", "print(int(input()) * 2)\n");
+        await writeFile(ana, id, "half.py", "print(int(input()) * 2 + 1)\n");
+        await writeFile(ana, id, "wrong.py", "print(0)\n");
+        const manifest = `name: polygon-style
+limits: { time_ms: 3000, memory_mb: 256 }
+constraints: { N: { min: 1, max: 100 } }
+validator: validator.cpp
+checker: checker.cpp
+generators: { gen: gen.cpp }
+groups:
+  - name: all
+    points: 100
+    aggregate: sum
+    tests:
+      - { gen: gen, args: "50 {i}", count: 2, desc: "random" }
+      - { manual: tests/one.in, answer: tests/one.ans, desc: "smallest input" }
+solutions:
+  - { path: sol.py, role: main }
+  - { path: half.py, expect: PA }
+  - { path: wrong.py, expect: WA }
+`;
+        await writeFile(ana, id, "problem.yaml", manifest);
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        const byPath = Object.fromEntries(result.output.report.solutions.map((solution: any) => [solution.path, solution]));
+        expect(byPath["sol.py"].score).toBe(100);
+        expect(byPath["half.py"].score).toBe(50);
+        expect(byPath["wrong.py"].score).toBe(0);
+        const manual = result.output.tests.find((test: any) => test.id === "all/3");
+        expect(manual).toMatchObject({ desc: "smallest input", answerFile: "tests/one.ans", validation: { all: null } });
+        expect((await ana.get(`/problems/${id}/blobs/${manual.answerHash}`)).raw.toString()).toBe("2\n");
+        // the generator got its arguments as argv and is deterministic
+        const generated = (await ana.get(`/problems/${id}/blobs/${result.output.tests[0].inputHash}`)).raw.toString();
+        expect(Number(generated)).toBeGreaterThanOrEqual(1);
+        expect(Number(generated)).toBeLessThanOrEqual(50);
+
+        // the testlib validator rejects a test outside the constraints, with its own message
+        await writeFile(ana, id, "problem.yaml", manifest.replace("      - { manual: tests/one.in", "      - { manual: tests/big.in }\n      - { manual: tests/one.in"));
+        const invalid = await build(ana, id);
+        expect(invalid.result).toBe("red");
+        expect(invalid.output.tests.find((test: any) => test.id === "all/3").validation.all).toMatch(/violates the range|500/);
+    }, 180_000);
+});
+
+describe("package handling", () => {
+    it("downloads the package and a build's tests as zip archives", async () => {
+        const id = await createProblem(ana, "archive");
+        const result = await build(ana, id);
+        const tests = await ana.get(`/builds/${result.id}/tests.zip`);
+        expect(tests.status).toBe(200);
+        const testFiles = unzipSync(new Uint8Array(tests.raw));
+        expect(Buffer.from(testFiles["samples/001.in"]!).toString()).toBe("5 6\n1 5 3 3 2\n");
+        expect(Buffer.from(testFiles["samples/001.out"]!).toString().trim()).toBe("2");
+        expect(Object.keys(testFiles).filter((name) => name.endsWith(".in"))).toHaveLength(result.output.tests.length);
+
+        const committed = await ana.post(`/problems/${id}/revisions`, { message: "First" });
+        await finished(harness, ana, committed.body.buildId);
+        await writeFile(ana, id, "notes.txt", "only in the working copy\n");
+        const working = unzipSync(new Uint8Array((await ana.get(`/problems/${id}/archive`)).raw));
+        expect(Buffer.from(working["notes.txt"]!).toString()).toBe("only in the working copy\n");
+        expect(working["problem.yaml"]).toBeDefined();
+        const frozen = unzipSync(new Uint8Array((await ana.get(`/problems/${id}/archive?revision=${committed.body.id}`)).raw));
+        expect(frozen["notes.txt"]).toBeUndefined();
+        expect(frozen["solutions/main.cpp"]).toBeDefined();
+    });
+
+    it("rebuilds from scratch on request and cancels a build in progress", async () => {
+        const id = await createProblem(ana, "rebuild");
+        await build(ana, id);
+        const before = harness.runner.calls;
+        expect((await build(ana, id)).result).toBe("green");
+        expect(harness.runner.calls).toBe(before);
+        expect((await build(ana, id, { clean: true })).result).toBe("green");
+        // generation, validation, answers and every solution ran again
+        expect(harness.runner.calls).toBeGreaterThanOrEqual(before + 6);
+
+        const queued = await ana.post(`/problems/${id}/builds`, { clean: true });
+        expect((await ana.post(`/builds/${queued.body.id}/cancel`)).status).toBe(200);
+        await harness.app.worker.idle();
+        const cancelled = await ana.get(`/builds/${queued.body.id}`);
+        expect(cancelled.body.status).toBe("failed");
+        expect(cancelled.body.error).toBe("Cancelled by Ana");
+        expect((await ana.post(`/builds/${queued.body.id}/cancel`)).status).toBe(409);
+    });
+
+    it("only serves a problem its own content, even inside one workspace", async () => {
+        const first = await createProblem(ana, "vault-a");
+        const second = await createProblem(ana, "vault-b");
+        const secret = (await writeFile(ana, first, "notes/hidden.txt", "belongs to the first problem")).body.hash;
+        expect((await ana.get(`/problems/${first}/blobs/${secret}`)).status).toBe(200);
+        expect((await ana.get(`/problems/${second}/blobs/${secret}`)).status).toBe(404);
+        expect((await ana.post(`/problems/${second}/sync`, { changes: [{ path: "copy.txt", base: null, hash: secret }] })).status).toBe(400);
+        // content uploaded for a problem can be synced into it
+        const uploaded = await ana.post(`/problems/${second}/blobs`, Buffer.from("fresh"));
+        expect((await ana.post(`/problems/${second}/sync`, { changes: [{ path: "fresh.txt", base: null, hash: uploaded.body.hash }] })).status).toBe(200);
+        // a review thread cannot point at a file the problem does not have
+        expect((await ana.post(`/problems/${second}/threads`, { body: "look", path: "no/such/file.cpp", line: 3 })).status).toBe(400);
+        expect((await ana.post(`/problems/${second}/threads`, { body: "look", path: "fresh.txt", line: 1 })).status).toBe(200);
+    });
+
+    it("places single samples in a statement and previews unsaved text", async () => {
+        const id = await createProblem(ana, "samples");
+        const statement = await readFile(ana, id, "statement/en.md");
+        await writeFile(ana, id, "statement/en.md", statement.replace("{{samples}}", "{{sample.1}}\n\nThe pairs are (1, 5) and (3, 3).\n"));
+        expect((await build(ana, id)).result).toBe("green");
+        const rendered = (await ana.get(`/problems/${id}/statement`)).body;
+        expect(rendered.markdown).toMatch(/### Sample 1[\s\S]*The pairs are/);
+        expect(rendered.path).toBe("statement/en.md");
+        expect(rendered.source).toContain("{{sample.1}}");
+
+        const preview = await ana.post(`/problems/${id}/statement/preview`, { markdown: "At most {{N.max}} numbers, {{K.typo}}.\n\n{{sample.1}}\n{{sample.7}}" });
+        expect(preview.body.markdown).toContain("2 \\cdot 10^{5}");
+        expect(preview.body.markdown).toContain("### Sample 1");
+        expect(preview.body.unresolved).toEqual(["K.typo", "sample.7"]);
+    });
+});
+
 describe("working copy", () => {
     it("rejects an edit based on a stale version of the file", async () => {
         const id = await createProblem(ana, "stale");

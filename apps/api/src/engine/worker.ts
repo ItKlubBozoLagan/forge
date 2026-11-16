@@ -21,6 +21,9 @@ export class Worker {
     private active = 0;
     private stopped = false;
     private idleWaiters: Array<() => void> = [];
+    private pumping = false;
+    private again = false;
+    private running = new Map<string, AbortController>();
 
     constructor(
         private sql: Sql,
@@ -55,7 +58,33 @@ export class Worker {
         void this.pump();
     }
 
+    /** Stops a build that is queued or running. Returns false when it already finished. */
+    async cancel(id: string, reason: string): Promise<boolean> {
+        const rows = await this.sql`
+            update builds set status = 'failed', error = ${reason}, finished_at = now()
+            where id = ${id} and status in ('queued', 'running') returning id`;
+        this.running.get(id)?.abort();
+        return rows.length > 0;
+    }
+
     private async pump() {
+        // one loop at a time: concurrent kicks would otherwise start more builds than allowed
+        if (this.pumping) {
+            this.again = true;
+            return;
+        }
+        this.pumping = true;
+        try {
+            do {
+                this.again = false;
+                await this.claim();
+            } while (this.again);
+        } finally {
+            this.pumping = false;
+        }
+    }
+
+    private async claim() {
         while (!this.stopped && this.active < this.parallelBuilds) {
             const rows = await this.sql<BuildRow[]>`
                 update builds set status = 'running', started_at = now()
@@ -79,7 +108,10 @@ export class Worker {
 
     private async execute(row: BuildRow) {
         let lastWrite = 0;
+        const controller = new AbortController();
+        this.running.set(row.id, controller);
         const engine = new Engine({
+            signal: controller.signal,
             workspaceId: row.workspace_id,
             tree: row.tree,
             blobs: this.blobs,
@@ -101,18 +133,21 @@ export class Worker {
                 return;
             }
             const adhoc = row.kind === "invocation" ? (row.params.adhoc as { name: string; language: Language; source: string }) : undefined;
-            const output = await engine.build({ remeasure: row.params.remeasure === true, adhoc });
+            const output = await engine.build({ remeasure: row.params.remeasure === true, clean: row.params.clean === true, adhoc });
             await this.finish(row.id, output, output.report.status);
         } catch (error) {
+            // a cancelled build already carries its reason
             await this.sql`
                 update builds set status = 'failed', error = ${(error as Error).stack ?? String(error)}, finished_at = now()
-                where id = ${row.id}`;
+                where id = ${row.id} and status = 'running'`;
+        } finally {
+            this.running.delete(row.id);
         }
     }
 
     private async finish(id: string, report: unknown, result: "green" | "red") {
         await this.sql`
             update builds set status = 'done', result = ${result}, report = ${this.sql.json(report as never)}, finished_at = now()
-            where id = ${id}`;
+            where id = ${id} and status = 'running'`;
     }
 }

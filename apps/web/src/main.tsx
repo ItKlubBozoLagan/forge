@@ -19,9 +19,12 @@ import { FilesTab } from "./pages/problem/FilesTab";
 import { InvocationsTab } from "./pages/problem/InvocationsTab";
 import { ProblemIndex, ProblemLayout } from "./pages/problem/ProblemLayout";
 import { ReviewTab } from "./pages/problem/ReviewTab";
+import { CompareView } from "./pages/problem/revisions/CompareView";
+import { RevisionView } from "./pages/problem/revisions/RevisionView";
 import { RevisionsTab } from "./pages/problem/RevisionsTab";
 import { StatementTab } from "./pages/problem/StatementTab";
 import { StressTab } from "./pages/problem/StressTab";
+import { StructureTab } from "./pages/problem/StructureTab";
 import { ProblemsPage } from "./pages/ProblemsPage";
 import { SetPage } from "./pages/SetPage";
 import { SetsPage } from "./pages/SetsPage";
@@ -63,10 +66,13 @@ const router = createBrowserRouter(
                     <Route path="/p/:problemId" element={<ProblemLayout />}>
                         <Route index element={<ProblemIndex />} />
                         <Route path="files" element={<FilesTab />} />
+                        <Route path="structure" element={<StructureTab />} />
                         <Route path="statement" element={<StatementTab />} />
                         <Route path="builds" element={<BuildsTab />} />
                         <Route path="builds/:buildId" element={<BuildsTab />} />
                         <Route path="revisions" element={<RevisionsTab />} />
+                        <Route path="revisions/compare" element={<CompareView />} />
+                        <Route path="revisions/:revisionId" element={<RevisionView />} />
                         <Route path="stress" element={<StressTab />} />
                         <Route path="invocations" element={<InvocationsTab />} />
                         <Route path="review" element={<ReviewTab />} />

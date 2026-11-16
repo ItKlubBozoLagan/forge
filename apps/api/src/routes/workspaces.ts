@@ -64,6 +64,8 @@ export const workspaceRoutes = (server: FastifyInstance, app: App) => {
         await requireWorkspace(app, user.id, id, true);
         if (!/^\d+$/.test(userId)) throw notFound();
         if (userId === user.id) throw badRequest("You cannot remove yourself");
+        const owners = await app.sql<{ user_id: string }[]>`select user_id from memberships where workspace_id = ${id} and role = 'owner'`;
+        if (owners.length === 1 && owners[0]!.user_id === userId) throw conflict("A workspace needs at least one owner");
         await app.sql`delete from memberships where workspace_id = ${id} and user_id = ${userId}`;
         await app.sql`delete from problem_access using problems
             where problem_access.problem_id = problems.id and problems.workspace_id = ${id} and problem_access.user_id = ${userId}`;

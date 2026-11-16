@@ -23,6 +23,9 @@ export class CountingRunner implements Runner {
         this.calls += 1;
         return this.inner.check(request);
     }
+    alive() {
+        return this.inner.alive();
+    }
     close() {
         return this.inner.close();
     }

@@ -34,6 +34,8 @@ type Props = {
     onSelect: (path: string) => void;
     onRename: (path: string) => void;
     onDelete: (path: string) => void;
+    /** Deletes every file under a folder; the folder delete button shows when set. */
+    onDeleteFolder?: (path: string) => void;
 };
 
 export const FileTree = (props: Props) => {
@@ -58,20 +60,37 @@ export const FileTree = (props: Props) => {
                         aria-expanded={open}
                         aria-selected={false}
                     >
-                        <button
-                            type="button"
-                            onClick={() => toggle(folder.path)}
-                            className="flex h-7 w-full items-center gap-1 rounded px-1 text-left text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
-                            style={{ paddingLeft: 4 + depth * 12 }}
+                        <div
+                            className="group flex items-center rounded hover:bg-surface-2"
+                            data-folder={folder.path}
                         >
-                            {open ? (
-                                <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-                            ) : (
-                                <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+                            <button
+                                type="button"
+                                data-testid={`folder-${folder.path}`}
+                                onClick={() => toggle(folder.path)}
+                                className="flex h-7 min-w-0 flex-1 items-center gap-1 px-1 text-left text-[13px] text-muted hover:text-fg"
+                                style={{ paddingLeft: 4 + depth * 12 }}
+                            >
+                                {open ? (
+                                    <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+                                ) : (
+                                    <ChevronRight className="size-3.5 shrink-0" aria-hidden />
+                                )}
+                                <Folder className="size-3.5 shrink-0" aria-hidden />
+                                <span className="truncate">{folder.name}</span>
+                            </button>
+                            {props.writable && props.onDeleteFolder && (
+                                <button
+                                    type="button"
+                                    aria-label={`Delete folder ${folder.path}`}
+                                    title="Delete folder"
+                                    onClick={() => props.onDeleteFolder?.(folder.path)}
+                                    className="shrink-0 rounded p-1 text-muted opacity-100 hover:bg-surface-3 hover:text-danger md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                                >
+                                    <Trash2 className="size-3.5" />
+                                </button>
                             )}
-                            <Folder className="size-3.5 shrink-0" aria-hidden />
-                            <span className="truncate">{folder.name}</span>
-                        </button>
+                        </div>
                         {open && renderFolder(folder, depth + 1)}
                     </li>
                 );

@@ -48,5 +48,7 @@ export interface Runner {
     readonly hardwareClass: string;
     run(request: RunRequest): Promise<RunResult>;
     check(request: CheckRequest): Promise<RunResult>;
+    /** Whether the runner can take work right now. */
+    alive(): Promise<boolean>;
     close(): Promise<void>;
 }

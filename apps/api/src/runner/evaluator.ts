@@ -23,6 +23,11 @@ type EvaluatorResult = {
 /** Evaluator messages carry test data inline, so large batches are split. */
 const MAX_CHUNK_BYTES = 6 * 1024 * 1024;
 const MAX_CHUNK_TESTS = 64;
+/**
+ * Worst-case run time allowed in one message (tests x time limit). A job must answer before its
+ * timeout, so a slow solution on many tests is split instead of being declared lost.
+ */
+const MAX_CHUNK_RUN_MS = 4 * 60_000;
 const CHECK_CONCURRENCY = 8;
 
 const PROBE_TIMEOUT_MS = 30_000;
@@ -38,6 +43,7 @@ export class EvaluatorRunner implements Runner {
     private resultQueue = `forge_results:${randomUUID()}`;
     private pending = new Map<string, (result: EvaluatorResult | undefined) => void>();
     private closed = false;
+    private lastAlive?: { ok: boolean; at: number };
     private idFormat?: Promise<"number" | "string">;
 
     constructor(private config: Config) {
@@ -99,7 +105,33 @@ export class EvaluatorRunner implements Runner {
                 evaluation: request.interactive ? { Interactive: body } : { Batch: body },
             },
         };
-        return this.interpret(await this.send(id, message), inputs, request.checking === "capture");
+        // waiting in the queue is covered by the configured timeout; running by the worst case of
+        // this chunk (the sandbox allows about twice the CPU limit in wall-clock time)
+        const timeout = this.config.runner.jobTimeoutMs + 2 * inputs.length * request.timeLimitMs + 60_000;
+        return this.interpret(await this.send(id, message, timeout), inputs, request.checking === "capture");
+    }
+
+    /** Whether an evaluator is consuming the queue and answering, within a few seconds. */
+    async alive(): Promise<boolean> {
+        if (this.lastAlive && Date.now() - this.lastAlive.at < 30_000) return this.lastAlive.ok;
+        const probe = async (id: number | string) =>
+            (await this.send(
+                id,
+                {
+                    BeginEvaluation: {
+                        output_queue: this.resultQueue,
+                        evaluation: { OutputOnly: { id, output: "", testcase: { id: "probe", input: "", output: "" }, checker: null } },
+                    },
+                },
+                5000,
+            )) !== undefined;
+        const configured = this.config.runner.idFormat;
+        const number = randomInt(1, 2 ** 48 - 1);
+        const answers = await Promise.all(
+            configured === "auto" ? [probe(number), probe(String(number + 1))] : [probe(configured === "string" ? String(number) : number)],
+        );
+        this.lastAlive = { ok: answers.some(Boolean), at: Date.now() };
+        return this.lastAlive.ok;
     }
 
     /**
@@ -245,7 +277,8 @@ export class EvaluatorRunner implements Runner {
         let bytes = 0;
         for (const input of request.inputs) {
             const size = input.stdin.length + (input.expected?.length ?? 0);
-            if (current.length > 0 && (bytes + size > MAX_CHUNK_BYTES || current.length >= MAX_CHUNK_TESTS)) {
+            const tooLong = (current.length + 1) * request.timeLimitMs > MAX_CHUNK_RUN_MS;
+            if (current.length > 0 && (bytes + size > MAX_CHUNK_BYTES || current.length >= MAX_CHUNK_TESTS || tooLong)) {
                 chunks.push(current);
                 current = [];
                 bytes = 0;
@@ -266,6 +299,8 @@ export class EvaluatorRunner implements Runner {
 
     async close() {
         this.closed = true;
+        // answers nobody will read any more
+        await this.client.del(this.resultQueue).catch(() => {});
         await this.listener.disconnect().catch(() => {});
         await this.client.disconnect().catch(() => {});
     }

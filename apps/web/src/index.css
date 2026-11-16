@@ -260,3 +260,37 @@ dialog {
 .cm-host > div {
     height: 100%;
 }
+
+/* Printing a statement: only the .print-statement block goes on paper, in black on white. */
+@media print {
+    @page {
+        margin: 18mm 16mm;
+    }
+    html,
+    body {
+        background: #fff !important;
+        color: #000 !important;
+        height: auto !important;
+        overflow: visible !important;
+    }
+    body:has(.print-statement) * {
+        visibility: hidden;
+    }
+    body:has(.print-statement) .print-statement,
+    body:has(.print-statement) .print-statement * {
+        visibility: visible;
+    }
+    body:has(.print-statement) .print-statement {
+        position: absolute;
+        inset: 0 0 auto 0;
+        width: 100%;
+    }
+    .print-statement .markdown {
+        font-size: 11pt;
+    }
+    .print-statement .markdown pre {
+        white-space: pre-wrap;
+        break-inside: avoid;
+        background: none;
+    }
+}

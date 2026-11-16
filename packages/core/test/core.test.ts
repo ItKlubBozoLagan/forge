@@ -109,6 +109,33 @@ describe("manifest", () => {
         expect(batch.issues.map((issue) => issue.code)).toContain("file.missing");
     });
 
+    it("warns about what kontestis cannot score when the problem is meant for it", () => {
+        const files = templateFiles("ioi", "demo", "Demo");
+        const text = files["problem.yaml"]!;
+        const codes = (manifest: string) => planBuild(parseManifest(manifest).manifest!, Object.keys(files)).issues.filter((issue) => issue.code === "kontestis.incompatible");
+        expect(codes(text)).toEqual([]);
+        const targeted = codes(text.replace("type: batch", "type: batch\njudge: kontestis"));
+        // the IOI template makes "full" depend on "small"
+        expect(targeted).toHaveLength(1);
+        expect(targeted[0]!.message).toContain("depends on other groups");
+        expect(codes(text.replace("type: batch", "type: batch\njudge: kontestis\nscoring: { mode: binary }")).length).toBe(2);
+    });
+
+    it("accepts built-in checkers and hand-written answers", () => {
+        const files = templateFiles("ioi", "demo", "Demo");
+        const manifest = files["problem.yaml"]!
+            .replace("validator: validator.py", "validator: validator.py\nchecker: { builtin: float, eps: 0.001 }")
+            .replace("- manual: tests/sample1.in", "- { manual: tests/sample1.in, answer: tests/sample1.ans, desc: from the statement }");
+        const parsed = parseManifest(manifest);
+        expect(parsed.issues).toEqual([]);
+        const missing = planBuild(parsed.manifest!, Object.keys(files));
+        expect(missing.issues.map((issue) => issue.code)).toContain("file.missing");
+        const { plan: built, issues } = planBuild(parsed.manifest!, [...Object.keys(files), "tests/sample1.ans"]);
+        expect(issues.filter((issue) => issue.severity === "error")).toEqual([]);
+        expect(built.builtinChecker).toEqual({ kind: "float", eps: 0.001 });
+        expect(built.tests[0]).toMatchObject({ answer: "tests/sample1.ans", desc: "from the statement" });
+    });
+
     it("ships templates that plan without errors", () => {
         for (const format of TEMPLATE_FORMATS) {
             const files = templateFiles(format, "demo", "Demo");

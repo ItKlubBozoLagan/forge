@@ -33,6 +33,7 @@ const tabsFor = (problem: Problem) => {
     const base = `/p/${problem.id}`;
     const all = [
         { to: `${base}/files`, label: "Files", key: "files" },
+        { to: `${base}/structure`, label: "Structure", key: "structure" },
         { to: `${base}/statement`, label: "Statement", key: "statement" },
         { to: `${base}/builds`, label: "Builds", key: "builds" },
         { to: `${base}/revisions`, label: "Revisions", key: "revisions" },
@@ -207,14 +208,23 @@ export const ProblemLayout = () => {
                         <Badge title="Latest committed revision">
                             {data.head ? `revision ${data.head.number}` : "no revisions"}
                         </Badge>
-                        {data.dirty && (
-                            <Badge
-                                tone="warning"
-                                title="The working copy differs from the latest revision"
-                            >
-                                uncommitted changes
-                            </Badge>
-                        )}
+                        {data.dirty &&
+                            (data.head && can(data.role, "read") ? (
+                                <Link
+                                    to={`/p/${data.id}/revisions/compare?from=${data.head.id}&to=working`}
+                                    className="rounded hover:opacity-80"
+                                    title="Show what changed since the latest revision"
+                                >
+                                    <Badge tone="warning">uncommitted changes</Badge>
+                                </Link>
+                            ) : (
+                                <Badge
+                                    tone="warning"
+                                    title="The working copy differs from the latest revision"
+                                >
+                                    uncommitted changes
+                                </Badge>
+                            ))}
                     </div>
                 </div>
                 {writable && (

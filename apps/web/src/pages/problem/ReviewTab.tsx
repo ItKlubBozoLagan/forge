@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, MessagesSquare } from "lucide-react";
 import { FormEvent, useState } from "react";
+import { Link } from "react-router";
 
-import { api } from "../../lib/api";
+import { api, q } from "../../lib/api";
 import { formatDate, formatRelative, plural } from "../../lib/format";
-import { can, keys, useTree } from "../../lib/queries";
+import { can, keys, useRevisions, useTree } from "../../lib/queries";
 import type { Thread } from "../../lib/types";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
@@ -13,17 +14,44 @@ import { EmptyState, ErrorNotice, Loading } from "../../ui/misc";
 import { useToast } from "../../ui/Toast";
 import { useProblemContext } from "./ProblemLayout";
 
-const ThreadAnchor = ({ thread }: { thread: Thread }) =>
-    thread.path ? (
-        <span className="font-mono text-[12.5px]">
-            {thread.path}
-            {thread.line ? `:${thread.line}` : ""}
-        </span>
-    ) : (
-        <span className="text-[13px] text-muted">General</span>
-    );
+/** Where an anchored thread points: the file in the Files tab, or in the revision viewer. */
+const threadHref = (problemId: string, thread: Thread) => {
+    const search = q({ path: thread.path, line: thread.line });
+    return thread.revisionId
+        ? `/p/${problemId}/revisions/${thread.revisionId}${search}`
+        : `/p/${problemId}/files${search}`;
+};
 
-const ThreadView = ({ thread }: { thread: Thread }) => {
+const ThreadAnchor = ({ thread }: { thread: Thread }) => {
+    const { problem } = useProblemContext();
+    const revisions = useRevisions(problem.id, !!thread.revisionId && can(problem.role, "read"));
+    if (!thread.path) return <span className="text-[13px] text-muted">General</span>;
+    const label = `${thread.path}${thread.line ? `:${thread.line}` : ""}`;
+    const number = revisions.data?.find((revision) => revision.id === thread.revisionId)?.number;
+    return (
+        <span className="inline-flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            {can(problem.role, "read") ? (
+                <Link
+                    to={threadHref(problem.id, thread)}
+                    className="font-mono text-[12.5px] break-all text-accent hover:underline"
+                    title={thread.line ? `Open ${thread.path} at line ${thread.line}` : undefined}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    {label}
+                </Link>
+            ) : (
+                <span className="font-mono text-[12.5px] break-all">{label}</span>
+            )}
+            {thread.revisionId && (
+                <span className="text-xs text-muted">
+                    {number !== undefined ? `revision ${number}` : "in a revision"}
+                </span>
+            )}
+        </span>
+    );
+};
+
+export const ThreadView = ({ thread }: { thread: Thread }) => {
     const { problem } = useProblemContext();
     const [reply, setReply] = useState("");
     const [pending, setPending] = useState<"reply" | "resolve">();

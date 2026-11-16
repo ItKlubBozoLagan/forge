@@ -5,3 +5,5 @@ export * from "./report";
 export * from "./statement";
 export * from "./verdicts";
 export * from "./templates";
+export * from "./checkers";
+export * from "./edit";

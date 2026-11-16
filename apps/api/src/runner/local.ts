@@ -217,5 +217,9 @@ export class LocalRunner implements Runner {
         }
     }
 
+    async alive() {
+        return true;
+    }
+
     async close() {}
 }

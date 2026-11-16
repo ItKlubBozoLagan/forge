@@ -1,14 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { History } from "lucide-react";
+import { FileDiff, FolderOpen, History } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 
-import { api } from "../../lib/api";
+import { api, q } from "../../lib/api";
 import { formatDate, formatRelative } from "../../lib/format";
 import { can, keys, useRevisions } from "../../lib/queries";
 import type { Revision } from "../../lib/types";
 import { BuildBadge } from "../../ui/Badge";
-import { Button } from "../../ui/Button";
+import { Button, ButtonLink } from "../../ui/Button";
 import { ConfirmDialog } from "../../ui/Dialog";
 import { EmptyState, ErrorNotice, Loading } from "../../ui/misc";
 import { Table, TableWrap, Td, Th, Tr } from "../../ui/Table";
@@ -22,6 +22,8 @@ export const RevisionsTab = () => {
     const queryClient = useQueryClient();
     const toast = useToast();
     const writable = can(problem.role, "write");
+    const parentOf = (revision: Revision) =>
+        revisions.data?.find((item) => item.number === revision.number - 1);
 
     if (revisions.isPending) return <Loading />;
     if (revisions.error) return <ErrorNotice error={revisions.error} />;
@@ -34,8 +36,27 @@ export const RevisionsTab = () => {
             </EmptyState>
         );
 
+    const latest = revisions.data[0]!;
     return (
         <>
+            <div className="mb-3 flex flex-wrap gap-2">
+                <ButtonLink
+                    size="sm"
+                    icon={<FileDiff className="size-3.5" />}
+                    to={`/p/${problem.id}/revisions/compare${q({ from: latest.id, to: "working" })}`}
+                >
+                    Working copy vs revision {latest.number}
+                </ButtonLink>
+                {revisions.data.length > 1 && (
+                    <ButtonLink
+                        size="sm"
+                        icon={<FileDiff className="size-3.5" />}
+                        to={`/p/${problem.id}/revisions/compare${q({ from: revisions.data[1]!.id, to: latest.id })}`}
+                    >
+                        Compare revisions
+                    </ButtonLink>
+                )}
+            </div>
             <TableWrap>
                 <Table>
                     <thead>
@@ -45,7 +66,9 @@ export const RevisionsTab = () => {
                             <Th>Author</Th>
                             <Th>Date</Th>
                             <Th>Build</Th>
-                            {writable && <Th className="w-0" />}
+                            <Th className="w-0">
+                                <span className="sr-only">Actions</span>
+                            </Th>
                         </tr>
                     </thead>
                     <tbody>
@@ -76,13 +99,36 @@ export const RevisionsTab = () => {
                                         <span className="text-xs text-subtle">not built</span>
                                     )}
                                 </Td>
-                                {writable && (
-                                    <Td>
-                                        <Button size="sm" onClick={() => setRestoring(revision)}>
-                                            Restore to working copy
-                                        </Button>
-                                    </Td>
-                                )}
+                                <Td>
+                                    <div className="flex gap-1.5">
+                                        <ButtonLink
+                                            size="sm"
+                                            icon={<FolderOpen className="size-3.5" />}
+                                            to={`/p/${problem.id}/revisions/${revision.id}`}
+                                            aria-label={`Browse revision ${revision.number}`}
+                                        >
+                                            Browse
+                                        </ButtonLink>
+                                        {revision.number > 1 && parentOf(revision) && (
+                                            <ButtonLink
+                                                size="sm"
+                                                icon={<FileDiff className="size-3.5" />}
+                                                to={`/p/${problem.id}/revisions/compare${q({ from: parentOf(revision)!.id, to: revision.id })}`}
+                                                aria-label={`Changes in revision ${revision.number}`}
+                                            >
+                                                Changes
+                                            </ButtonLink>
+                                        )}
+                                        {writable && (
+                                            <Button
+                                                size="sm"
+                                                onClick={() => setRestoring(revision)}
+                                            >
+                                                Restore to working copy
+                                            </Button>
+                                        )}
+                                    </div>
+                                </Td>
                             </Tr>
                         ))}
                     </tbody>

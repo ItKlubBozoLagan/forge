@@ -53,6 +53,17 @@ export const TestDialog = ({
                         <code className="block rounded-md border border-line bg-surface-2 px-2 py-1 font-mono text-xs break-all">
                             {test.source}
                         </code>
+                        {test.desc && <p className="mt-1.5 text-sm text-muted">{test.desc}</p>}
+                        {test.answerFile && (
+                            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-sm">
+                                <Badge tone="accent">hand-written answer</Badge>
+                                <span className="text-muted">
+                                    The answer is the file{" "}
+                                    <span className="font-mono">{test.answerFile}</span>, not the
+                                    main solution's output.
+                                </span>
+                            </p>
+                        )}
                     </section>
                     {test.error && <ErrorNotice error={new Error(test.error)} />}
                     <section>

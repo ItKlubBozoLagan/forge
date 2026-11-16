@@ -96,6 +96,10 @@ export type BuildTest = {
     answerHash?: string;
     error?: string;
     validation: Record<string, string | null>;
+    /** The author's note on the test. */
+    desc?: string;
+    /** Set when the answer is a hand-written file instead of the main solution's output. */
+    answerFile?: string;
 };
 
 export type BuildGroup = {
@@ -185,6 +189,16 @@ export type Statement = {
     samplesBuilt: boolean;
     limits?: { time_ms: number; memory_mb: number };
     groups?: Array<{ name: string; points: number; sample: boolean }>;
+    /** The statement file and its raw Markdown (not sent to blind testers). */
+    path?: string;
+    source?: string;
+};
+
+export type StatementPreview = { markdown: string; unresolved: string[]; samplesBuilt: boolean };
+
+export type Health = {
+    ok: boolean;
+    runner: { kind: string; pool: string; hardwareClass: string; alive?: boolean };
 };
 
 export type Comment = {

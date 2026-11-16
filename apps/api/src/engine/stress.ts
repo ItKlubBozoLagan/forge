@@ -1,4 +1,4 @@
-import { judge, withPrelude } from "@forge/core";
+import { judge } from "@forge/core";
 
 import { sha256 } from "../blobs";
 import { Engine } from "./engine";
@@ -94,11 +94,7 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
         else tests.push({ ...input, answerHash: answer.hash });
     }
 
-    const checkerProgram = plan.checker ? await engine.program(plan.checker.path) : undefined;
-    const checker = checkerProgram && {
-        language: checkerProgram.language,
-        source: withPrelude(checkerProgram.source, checkerProgram.language, plan.manifest.constraints),
-    };
+    const checker = await engine.checker(plan);
     const runs = await engine.runSolution(
         await engine.program(candidate.path),
         checker,

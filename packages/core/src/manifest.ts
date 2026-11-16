@@ -2,6 +2,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
 import { Language, languageOf } from "./languages";
+import { PRELUDE_LANGUAGES } from "./prelude";
 
 const Identifier = z.string().regex(/^[A-Za-z][A-Za-z0-9_]*$/, "must be an identifier");
 const GroupName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, "letters, digits, - and _ only");
@@ -21,12 +22,33 @@ export type TaskType = (typeof TASK_TYPES)[number];
 export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive", "output-only"];
 
 const TestSpec = z.union([
-    z.object({ manual: FilePath }).strict(),
+    z
+        .object({
+            manual: FilePath,
+            /** A hand-written answer file; without it the main solution produces the answer. */
+            answer: FilePath.optional(),
+            desc: z.string().max(200).optional(),
+        })
+        .strict(),
     z
         .object({
             gen: Identifier,
             args: z.string().default(""),
             count: z.number().int().min(1).max(1000).optional(),
+            desc: z.string().max(200).optional(),
+        })
+        .strict(),
+]);
+
+export const BUILTIN_CHECKERS = ["tokens", "lines", "float", "yesno"] as const;
+export type BuiltinChecker = (typeof BUILTIN_CHECKERS)[number];
+const Checker = z.union([
+    FilePath,
+    z
+        .object({
+            builtin: z.enum(BUILTIN_CHECKERS),
+            /** `float` only: largest absolute or relative error accepted. */
+            eps: z.number().positive().max(1).optional(),
         })
         .strict(),
 ]);
@@ -79,7 +101,9 @@ export const ManifestSchema = z
             .default({ mode: "sum" }),
         constraints: Constraints.default({}),
         validator: FilePath.optional(),
-        checker: FilePath.optional(),
+        checker: Checker.optional(),
+        /** Judge the problem is meant for; turns on warnings about what that judge cannot score. */
+        judge: z.enum(["kontestis"]).optional(),
         generators: z.record(Identifier, FilePath).default({}),
         groups: z.array(Group).min(1),
         solutions: z.array(Solution).default([]),
@@ -104,6 +128,9 @@ export type PlannedTest = {
     group: string;
     index: number;
     source: { kind: "manual"; path: string } | { kind: "gen"; generator: string; path: string; args: string };
+    /** Hand-written answer file of a manual test. */
+    answer?: string;
+    desc?: string;
 };
 
 export type PlannedGroup = {
@@ -143,6 +170,8 @@ export type Plan = {
     main?: PlannedSolution;
     validator?: { path: string; language: Language };
     checker?: { path: string; language: Language };
+    /** A checker Forge generates: `lines`, `float` or `yesno` (`tokens` is the judge's default). */
+    builtinChecker?: { kind: Exclude<BuiltinChecker, "tokens">; eps: number };
     statements: Record<string, string>;
 };
 
@@ -225,7 +254,15 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     const validator = manifest.validator ? program(manifest.validator, "Validator") : undefined;
     if (!manifest.validator)
         warning("validator.missing", "No validator: nothing proves the tests satisfy the constraints");
-    const checker = manifest.checker ? program(manifest.checker, "Checker") : undefined;
+    const checker = typeof manifest.checker === "string" ? program(manifest.checker, "Checker") : undefined;
+    const builtinChecker =
+        typeof manifest.checker === "object" && manifest.checker.builtin !== "tokens"
+            ? { kind: manifest.checker.builtin, eps: manifest.checker.eps ?? 1e-6 }
+            : undefined;
+    if (typeof manifest.checker === "object" && manifest.checker.eps !== undefined && manifest.checker.builtin !== "float")
+        warning("checker.eps", `eps only applies to the float checker, not to "${manifest.checker.builtin}"`);
+    if (manifest.type === "interactive" && typeof manifest.checker === "object")
+        error("checker.missing", "Interactive tasks need an interactor program as the checker, not a built-in one");
     if (manifest.type === "interactive" && !manifest.checker)
         error("checker.missing", "Interactive tasks need a checker (the interactor)");
 
@@ -255,17 +292,21 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     for (const group of manifest.groups) {
         const ids: string[] = [];
         let index = 0;
-        const add = (source: PlannedTest["source"]) => {
+        const add = (source: PlannedTest["source"], extra: Pick<PlannedTest, "answer" | "desc"> = {}) => {
             index += 1;
             const id = `${group.name}/${index}`;
-            tests.push({ id, group: group.name, index, source });
+            tests.push({ id, group: group.name, index, source, ...extra });
             ids.push(id);
         };
         for (const spec of group.tests) {
             if ("manual" in spec) {
                 if (!fileSet.has(spec.manual))
                     error("file.missing", `Manual test ${spec.manual} does not exist`, spec.manual);
-                add({ kind: "manual", path: spec.manual });
+                if (spec.answer !== undefined && !fileSet.has(spec.answer))
+                    error("file.missing", `Answer file ${spec.answer} does not exist`, spec.answer);
+                if (spec.answer !== undefined && manifest.type === "interactive")
+                    warning("test.answer-unused", `Interactive tasks have no answers; ${spec.answer} is not used`, spec.answer);
+                add({ kind: "manual", path: spec.manual }, { answer: spec.answer, desc: spec.desc });
                 continue;
             }
             const generator = generators[spec.gen];
@@ -286,12 +327,15 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
                     group.name,
                 );
             for (let copy = 1; copy <= count; copy++)
-                add({
-                    kind: "gen",
-                    generator: spec.gen,
-                    path: generator.path,
-                    args: spec.args.replaceAll("{i}", String(copy)),
-                });
+                add(
+                    {
+                        kind: "gen",
+                        generator: spec.gen,
+                        path: generator.path,
+                        args: spec.args.replaceAll("{i}", String(copy)),
+                    },
+                    { desc: spec.desc },
+                );
         }
         if (ids.length === 0 && group.depends.length === 0)
             warning("group.empty", `Group "${group.name}" has no tests`, group.name);
@@ -432,6 +476,34 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     if (manifest.scoring.mode === "sum" && groups.every((group) => group.points === 0))
         warning("scoring.no-points", "No group awards points");
 
+    // the constants prelude exists for C, C++ and Python only
+    const hasConstraints = Object.keys(manifest.constraints).length > 0 || manifest.groups.some((group) => Object.keys(group.constraints).length > 0);
+    if (hasConstraints)
+        for (const tool of [validator, checker, ...Object.values(generators)])
+            if (tool && !PRELUDE_LANGUAGES.includes(tool.language))
+                warning(
+                    "prelude.unsupported",
+                    `${tool.path} is written in ${tool.language}, which does not receive the constraint constants (N_MAX, ...); only C, C++ and Python do`,
+                    tool.path,
+                );
+
+    // what kontestis cannot score today
+    if (manifest.judge === "kontestis") {
+        const incompatible = (message: string, ref?: string) => warning("kontestis.incompatible", `kontestis: ${message}`, ref);
+        if (manifest.scoring.mode === "binary")
+            incompatible("there is no binary (all-or-nothing) scoring; clusters are summed, so give one cluster all the points");
+        for (const group of manifest.groups) {
+            if (group.aggregate === "sum" && (ownTests[group.name]?.length ?? 0) > 1)
+                incompatible(`cluster "${group.name}" uses aggregate: sum, but a cluster scores the minimum over its tests`, group.name);
+            if (group.depends.length > 0)
+                incompatible(`cluster "${group.name}" depends on other groups; clusters are scored independently, so the dependency is not enforced`, group.name);
+            if (!Number.isInteger(group.points))
+                incompatible(`cluster "${group.name}" awards ${group.points} points; cluster scores are whole numbers`, group.name);
+            if (manifest.type === "output-only" && (ownTests[group.name]?.length ?? 0) > 1)
+                incompatible(`output-only cluster "${group.name}" has several tests; a submission is one output judged against the first test of each cluster`, group.name);
+        }
+    }
+
     return {
         plan: {
             manifest,
@@ -442,6 +514,7 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
             main: mains.length === 1 ? mains[0] : undefined,
             validator,
             checker,
+            builtinChecker,
             statements,
         },
         issues,

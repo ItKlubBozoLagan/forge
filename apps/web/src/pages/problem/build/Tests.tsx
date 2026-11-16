@@ -92,8 +92,32 @@ export const TestsCard = ({
                                                 {test.id}
                                             </button>
                                         </Td>
-                                        <Td className="max-w-64 truncate font-mono text-xs" title={test.source}>
-                                            {test.source}
+                                        <Td className="max-w-64 text-xs">
+                                            <div className="flex min-w-0 items-center gap-1.5">
+                                                <span
+                                                    className="truncate font-mono"
+                                                    title={test.source}
+                                                >
+                                                    {test.source}
+                                                </span>
+                                                {test.answerFile && (
+                                                    <Badge
+                                                        tone="accent"
+                                                        title={test.answerFile}
+                                                        data-testid={`answer-file-${test.id}`}
+                                                    >
+                                                        hand-written answer
+                                                    </Badge>
+                                                )}
+                                            </div>
+                                            {test.desc && (
+                                                <div
+                                                    className="mt-0.5 truncate text-muted"
+                                                    title={test.desc}
+                                                >
+                                                    {test.desc}
+                                                </div>
+                                            )}
                                         </Td>
                                         <Td className="text-right font-mono text-xs whitespace-nowrap">
                                             {test.inputSize === undefined ? "-" : formatBytes(test.inputSize)}

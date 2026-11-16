@@ -1,6 +1,6 @@
 import { TEMPLATE_FORMATS, TemplateFormat } from "@forge/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileCode2, Plus } from "lucide-react";
+import { FileCode2, Plus, Search } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
@@ -183,7 +183,15 @@ export const ProblemsPage = () => {
     const me = useMe();
     const problems = useProblems(workspaceId);
     const [creating, setCreating] = useState(false);
+    const [filter, setFilter] = useState("");
     const workspace = me.data?.workspaces.find((item) => item.id === workspaceId);
+    const needle = filter.trim().toLowerCase();
+    const shown = (problems.data ?? []).filter(
+        (problem) =>
+            !needle ||
+            problem.title.toLowerCase().includes(needle) ||
+            problem.name.toLowerCase().includes(needle),
+    );
 
     const newButton = (
         <Button
@@ -213,6 +221,22 @@ export const ProblemsPage = () => {
                 </EmptyState>
             )}
             {problems.data && problems.data.length > 0 && (
+                <div className="relative mb-3 max-w-sm">
+                    <Search
+                        className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-subtle"
+                        aria-hidden
+                    />
+                    <Input
+                        type="search"
+                        aria-label="Filter problems"
+                        placeholder="Filter by title or name"
+                        value={filter}
+                        onChange={(event) => setFilter(event.target.value)}
+                        className="pl-8"
+                    />
+                </div>
+            )}
+            {problems.data && problems.data.length > 0 && (
                 <TableWrap>
                     <Table>
                         <thead>
@@ -226,7 +250,14 @@ export const ProblemsPage = () => {
                             </tr>
                         </thead>
                         <tbody>
-                            {problems.data.map((problem) => (
+                            {shown.length === 0 && (
+                                <Tr>
+                                    <Td colSpan={6} className="text-center text-muted">
+                                        No problems match &quot;{filter.trim()}&quot;.
+                                    </Td>
+                                </Tr>
+                            )}
+                            {shown.map((problem) => (
                                 <Tr key={problem.id}>
                                     <Td>
                                         <Link

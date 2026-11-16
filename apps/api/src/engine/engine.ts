@@ -1,5 +1,6 @@
 import {
     buildReport,
+    builtinCheckerSource,
     Constraints,
     Issue,
     judge,
@@ -21,6 +22,7 @@ import {
 import { BlobStore, keyOf, sha256, Tree } from "../blobs";
 import { Sql } from "../db";
 import { Scheduler } from "../runner/scheduler";
+import { withTestlib } from "./testlib";
 import { CheckRequest, Program, Runner, RunRequest, RunResult } from "../runner/types";
 
 export type Progress = { phase: string; done: number; total: number };
@@ -35,7 +37,15 @@ export type EngineContext = {
     /** Hardware class the workspace's contests are judged on, when it has named one. */
     referenceClass?: string | null;
     onProgress?: (progress: Progress) => void;
+    /** Aborted when the build is cancelled. */
+    signal?: AbortSignal;
 };
+
+export class Cancelled extends Error {
+    constructor() {
+        super("The build was cancelled");
+    }
+}
 
 export type BuildTest = {
     id: string;
@@ -46,6 +56,10 @@ export type BuildTest = {
     inputHash?: string;
     inputSize?: number;
     answerHash?: string;
+    /** Author's note about what the test is for. */
+    desc?: string;
+    /** Set when the answer is a hand-written file instead of the main solution's output. */
+    answerFile?: string;
     error?: string;
     /** Validation result per group whose closure contains the test; null means valid. */
     validation: Record<string, string | null>;
@@ -67,15 +81,26 @@ export type BuildOutput = {
 };
 
 export type AdhocSolution = { name: string; language: Language; source: string };
-export type BuildOptions = { remeasure?: boolean; adhoc?: AdhocSolution };
+export type BuildOptions = {
+    remeasure?: boolean;
+    /** Ignore every cached step: regenerate, revalidate, re-answer and re-run. */
+    clean?: boolean;
+    adhoc?: AdhocSolution;
+};
 
 const GENERATOR_LIMIT_MS = 30_000;
 const TOOL_MEMORY_MB = 1024;
 /** Solution output kept per run for inspection; longer output is cut. */
 const MAX_STORED_OUTPUT = 512 * 1024;
+/** Tests of one solution sent to the runner per job. */
+const RUN_SLICE = 64;
 
 type Generated = { hash: string; size: number } | { error: string };
 type Stored<T> = { key: string; value: T };
+
+/** How the build names its checker: a file, a built-in, or nothing for the judge's default. */
+export const checkerLabel = (plan: Plan): string | undefined =>
+    plan.checker?.path ?? (plan.builtinChecker ? `built-in ${plan.builtinChecker.kind}${plan.builtinChecker.kind === "float" ? ` (eps ${plan.builtinChecker.eps})` : ""}` : undefined);
 
 export class Engine {
     constructor(private ctx: EngineContext) {}
@@ -86,12 +111,20 @@ export class Engine {
         return this.ctx.blobs.text(this.ctx.workspaceId, entry.hash);
     }
 
+    /** Set for a build that ignores every cached step (`clean`). */
+    private fresh = false;
+
     private exec(request: RunRequest): Promise<RunResult> {
-        return this.ctx.scheduler.submit(this.ctx.workspaceId, () => this.ctx.runner.run(request));
+        return this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
+            // a cancelled build stops asking for work; jobs already on the runner finish on their own
+            if (this.ctx.signal?.aborted) throw new Cancelled();
+            return this.ctx.runner.run(request);
+        });
     }
 
     private async cached<T>(keys: string[]): Promise<Map<string, T>> {
         const found = new Map<string, T>();
+        if (this.fresh) return found;
         const unique = [...new Set(keys)];
         for (let offset = 0; offset < unique.length; offset += 500) {
             const rows = await this.ctx.sql<{ key: string; result: T }[]>`
@@ -122,7 +155,7 @@ export class Engine {
         group: string | undefined,
         items: Array<{ id: string; args: string }>,
     ): Promise<Map<string, Generated>> {
-        const source = withPrelude(generator.source, generator.language, constraints, group);
+        const source = withTestlib(withPrelude(generator.source, generator.language, constraints, group), generator.language, "generator");
         const sourceHash = sha256(source);
         const keyOfItem = (args: string) => keyOf("gen", sourceHash, generator.language, args);
         const known = await this.cached<Generated>(items.map((item) => keyOfItem(item.args)));
@@ -173,7 +206,7 @@ export class Engine {
         group: string,
         inputs: Array<{ id: string; inputHash: string }>,
     ): Promise<Map<string, string | null>> {
-        const source = withPrelude(validator.source, validator.language, constraints, group);
+        const source = withTestlib(withPrelude(validator.source, validator.language, constraints, group), validator.language, "validator");
         const sourceHash = sha256(source);
         const keyOfInput = (hash: string) => keyOf("val", sourceHash, validator.language, hash);
         const known = await this.cached<{ message: string | null }>(inputs.map((input) => keyOfInput(input.inputHash)));
@@ -288,9 +321,12 @@ export class Engine {
             const key = keyOfTest(test);
             if (!known.has(key)) missing.set(key, test);
         }
-        if (missing.size > 0) {
+        // big test sets go to the runner a slice at a time, so only one slice is in memory
+        const pending = [...missing];
+        for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
+            const slice = pending.slice(offset, offset + RUN_SLICE);
             const runInputs = [];
-            for (const [key, test] of missing)
+            for (const [key, test] of slice)
                 runInputs.push({
                     id: key,
                     stdin: await this.ctx.blobs.text(this.ctx.workspaceId, test.inputHash),
@@ -306,11 +342,13 @@ export class Engine {
             });
             const fresh: Array<Stored<RawRun>> = [];
             if (result.compileError !== undefined) {
-                for (const key of missing.keys())
+                // nothing will compile on the next slice either
+                for (const [key] of pending.slice(offset))
                     fresh.push({
                         key,
                         value: { status: "compilation_error", timeMs: 0, memoryKb: 0, message: result.compileError.slice(0, 4000) },
                     });
+                offset = pending.length;
             } else {
                 const samples = [];
                 for (const run of result.runs) {
@@ -344,13 +382,34 @@ export class Engine {
             await this.store("run", fresh);
             for (const entry of fresh) known.set(entry.key, entry.value);
         }
+        // A single measurement is noisy. With several samples on this hardware the median decides,
+        // so re-measuring makes a borderline verdict more stable instead of flipping it.
+        const medians = await this.medianTimes(tests.map(keyOfTest));
         const output = new Map<string, RawRun & { key: string }>();
         for (const test of tests) {
             const key = keyOfTest(test);
             const raw = known.get(key);
-            if (raw) output.set(test.id, { ...raw, key });
+            if (!raw) continue;
+            const median = medians.get(key);
+            const measured = raw.status === "accepted" || raw.status === "wrong_answer" || raw.status === "custom";
+            output.set(test.id, { ...raw, timeMs: measured && median !== undefined ? median : raw.timeMs, key });
         }
         return output;
+    }
+
+    private async medianTimes(keys: string[]): Promise<Map<string, number>> {
+        const medians = new Map<string, number>();
+        const unique = [...new Set(keys)];
+        for (let offset = 0; offset < unique.length; offset += 500) {
+            const rows = await this.ctx.sql<{ node_key: string; median: number; count: number }[]>`
+                select node_key, percentile_cont(0.5) within group (order by time_ms)::float8 as median, count(*)::int as count
+                from timing_samples
+                where workspace_id = ${this.ctx.workspaceId} and hardware_class = ${this.ctx.runner.hardwareClass}
+                    and node_key in ${this.ctx.sql(unique.slice(offset, offset + 500))}
+                group by node_key`;
+            for (const row of rows) if (row.count > 1) medians.set(row.node_key, Math.round(row.median));
+        }
+        return medians;
     }
 
     /** Output-only tasks: judges output files that are part of the package. */
@@ -376,9 +435,10 @@ export class Engine {
                     expected: await this.ctx.blobs.text(this.ctx.workspaceId, test.answerHash),
                     output: await this.ctx.blobs.text(this.ctx.workspaceId, test.outputHash),
                 });
-            const result = await this.ctx.scheduler.submit(this.ctx.workspaceId, () =>
-                this.ctx.runner.check({ checking: checker ?? "tokens", inputs }),
-            );
+            const result = await this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
+                if (this.ctx.signal?.aborted) throw new Cancelled();
+                return this.ctx.runner.check({ checking: checker ?? "tokens", inputs });
+            });
             const fresh: Array<Stored<RawRun>> = [];
             if (result.compileError !== undefined) {
                 for (const key of missing.keys())
@@ -400,6 +460,17 @@ export class Engine {
             if (raw) output.set(test.id, { ...raw, key });
         }
         return output;
+    }
+
+    /** The program that judges outputs: the package's checker, a built-in one, or none (the judge's default). */
+    async checker(plan: Plan): Promise<Program | undefined> {
+        if (plan.builtinChecker) return { language: "python", source: builtinCheckerSource(plan.builtinChecker.kind, plan.builtinChecker.eps) };
+        if (!plan.checker) return undefined;
+        const program = await this.program(plan.checker.path);
+        return {
+            language: program.language,
+            source: withTestlib(withPrelude(program.source, program.language, plan.manifest.constraints), program.language, "checker"),
+        };
     }
 
     /** Makes sure the empty blob exists; interactive tasks use it as every test's answer. */
@@ -442,6 +513,7 @@ export class Engine {
 
     /** The whole pipeline: generate, validate, answer, run every solution, report. */
     async build(options: BuildOptions = {}): Promise<BuildOutput> {
+        this.fresh = options.clean === true;
         const runner = { pool: this.ctx.runner.pool, hardwareClass: this.ctx.runner.hardwareClass };
         const { plan, issues } = await this.plan();
         const progress = (phase: string, done: number, total: number) => this.ctx.onProgress?.({ phase, done, total });
@@ -461,7 +533,7 @@ export class Engine {
             limits: plan?.manifest.limits,
             type: plan?.manifest.type,
             scoring: plan?.manifest.scoring.mode,
-            checker: plan?.checker?.path,
+            checker: plan ? checkerLabel(plan) : undefined,
             validator: plan?.validator?.path,
             runner,
         });
@@ -485,6 +557,8 @@ export class Engine {
             group: test.group,
             index: test.index,
             source: test.source.kind === "manual" ? test.source.path : `${test.source.generator} ${test.source.args}`.trim(),
+            desc: test.desc,
+            answerFile: test.answer,
             validation: {},
         }));
         const testById = new Map(tests.map((test) => [test.id, test]));
@@ -560,7 +634,10 @@ export class Engine {
         // statements must not reach contestants with a placeholder nobody filled in
         const groupConstraints = Object.fromEntries(plan.groups.map((group) => [group.name, group.constraints]));
         for (const [language, path] of Object.entries(plan.statements)) {
-            const { unresolved } = renderStatement(await this.read(path), plan.manifest, groupConstraints, []);
+            // as many (empty) samples as the package has, so {{sample.9}} of three is caught
+            const sampleGroups = new Set(plan.groups.filter((group) => group.sample).map((group) => group.name));
+            const placeholders = plan.tests.filter((test) => sampleGroups.has(test.group)).map(() => ({ input: "", output: "" }));
+            const { unresolved } = renderStatement(await this.read(path), plan.manifest, groupConstraints, placeholders);
             if (unresolved.length > 0)
                 error(
                     "statement.unresolved",
@@ -571,16 +648,11 @@ export class Engine {
 
         // 3. answers
         const withInput = tests.filter((test) => test.inputHash);
-        const checker = plan.checker
-            ? await this.program(plan.checker.path).then((program) => ({
-                  language: program.language,
-                  source: withPrelude(program.source, program.language, plan.manifest.constraints),
-              }))
-            : undefined;
+        const checker = await this.checker(plan);
         if (checker) {
             const compileError = await this.compiles(checker);
             if (compileError !== null) {
-                error("checker.compile", `The checker does not compile:\n${compileError}`, plan.checker!.path);
+                error("checker.compile", `The checker does not compile:\n${compileError}`, plan.checker?.path);
                 return { ...broken(), tests, groups: plan.groups };
             }
         }
@@ -592,8 +664,15 @@ export class Engine {
             // output-only task whose reference answers are files in the package
             for (const test of withInput) test.answerHash = this.ctx.tree[plan.main!.outputs[test.id] ?? ""]?.hash;
         } else {
+            // a hand-written answer file wins; the main solution answers the rest
+            const written = new Map(plan.tests.filter((test) => test.answer).map((test) => [test.id, test.answer!]));
+            for (const test of withInput) if (written.has(test.id)) test.answerHash = this.ctx.tree[written.get(test.id)!]?.hash;
             const main = await this.program(plan.main!.path);
-            const answers = await this.answers(main, limits, withInput.map((test) => ({ id: test.id, inputHash: test.inputHash! })));
+            const answers = await this.answers(
+                main,
+                limits,
+                withInput.filter((test) => !written.has(test.id)).map((test) => ({ id: test.id, inputHash: test.inputHash! })),
+            );
             for (const [id, answer] of answers) {
                 const test = testById.get(id)!;
                 if ("error" in answer) {
@@ -675,7 +754,7 @@ export class Engine {
             limits,
             type: plan.manifest.type,
             scoring: plan.manifest.scoring.mode,
-            checker: plan.checker?.path,
+            checker: checkerLabel(plan),
             validator: plan.validator?.path,
             runner,
         };

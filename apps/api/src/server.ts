@@ -29,7 +29,16 @@ export const createServer = async (app: App) => {
 
     await server.register(
         async (api) => {
-            api.get("/health", async () => ({ ok: true, runner: { kind: app.config.runner.kind, pool: app.runner.pool, hardwareClass: app.runner.hardwareClass } }));
+            // `?runner=1` also asks the runner whether it is answering, which takes up to a few seconds
+            api.get("/health", async (req) => ({
+                ok: true,
+                runner: {
+                    kind: app.config.runner.kind,
+                    pool: app.runner.pool,
+                    hardwareClass: app.runner.hardwareClass,
+                    ...((req.query as { runner?: string }).runner ? { alive: await app.runner.alive() } : {}),
+                },
+            }));
             authRoutes(api, app);
             workspaceRoutes(api, app);
             problemRoutes(api, app);
