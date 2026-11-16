@@ -3,8 +3,9 @@ import { defineConfig, devices } from "@playwright/test";
 // The suite starts its own API and web server on separate ports with a separate database, so
 // it never touches a development instance. FORGE_E2E_RUNNER=evaluator runs the same tests on
 // a real kontestis evaluator instead of the unsandboxed local runner.
-const API_PORT = 8191;
-const WEB_PORT = 3291;
+// E2E_API_PORT, E2E_WEB_PORT and E2E_DATABASE_URL let several runs share a machine.
+const API_PORT = Number(process.env.E2E_API_PORT ?? 8191);
+const WEB_PORT = Number(process.env.E2E_WEB_PORT ?? 3291);
 const runner = process.env.FORGE_E2E_RUNNER ?? "local";
 
 export default defineConfig({
