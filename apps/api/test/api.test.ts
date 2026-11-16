@@ -656,6 +656,138 @@ int main(int argc, char* argv[]) {
     });
 });
 
+describe("grader and communication tasks", () => {
+    it("builds a grader task: solutions implement a function, the grader holds main", async () => {
+        const id = await createProblem(ana, "grader-task", "empty");
+        await writeFile(ana, id, "grader/task.h", "long long solve(int n, const int* values);\n");
+        await writeFile(ana, id, "grader/grader.cpp", `#include <cstdio>
+#include <vector>
+#include "task.h"
+int main() {
+    int n;
+    if (scanf("%d", &n) != 1) return 1;
+    std::vector<int> values(n);
+    for (int& value : values) scanf("%d", &value);
+    printf("%lld\\n", solve(n, values.data()));
+}
+`);
+        await writeFile(ana, id, "grader/grader.py", "n = int(input())\nvalues = list(map(int, input().split()))\nprint(solve(n, values))\n");
+        await writeFile(ana, id, "solutions/sum.cpp", `#include "task.h"\nlong long solve(int n, const int* values) {\n    long long total = 0;\n    for (int i = 0; i < n; i++) total += values[i];\n    return total;\n}\n`);
+        await writeFile(ana, id, "solutions/sum.py", "def solve(n, values):\n    return sum(values)\n");
+        await writeFile(ana, id, "solutions/first.py", "def solve(n, values):\n    return values[0]\n");
+        await writeFile(ana, id, "solutions/broken.cpp", `#include "task.h"\nlong long solve(int n, const int* values) {\n    return undeclared;\n}\n`);
+        await writeFile(ana, id, "tests/one.in", "1\n5\n");
+        await writeFile(ana, id, "tests/three.in", "3\n1 2 3\n");
+        await writeFile(ana, id, "problem.yaml", `name: grader-task
+type: grader
+limits: { time_ms: 2000, memory_mb: 256 }
+grader: { cpp: grader/grader.cpp, python: grader/grader.py, headers: [grader/task.h] }
+groups:
+  - name: easy
+    points: 40
+    tests: [{ manual: tests/one.in }]
+  - name: all
+    points: 60
+    tests: [{ manual: tests/three.in }]
+solutions:
+  - { path: solutions/sum.cpp, role: main }
+  - { path: solutions/sum.py }
+  - { path: solutions/first.py, expect: { easy: AC, all: WA } }
+`);
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.report.solutions.map((solution: any) => [solution.path, solution.score])).toEqual([
+            ["solutions/sum.cpp", 100],
+            ["solutions/sum.py", 100],
+            ["solutions/first.py", 40],
+        ]);
+
+        // a compile error points at the contestant's own file and line, not at the joined program
+        const broken = await finished(harness, ana, (await ana.post(`/problems/${id}/invocations`, { name: "broken.cpp", language: "cpp", source: await readFile(ana, id, "solutions/broken.cpp") })).body.id);
+        const compile = broken.output.report.issues.find((issue: any) => issue.code === "solution.compile");
+        expect(compile.message).toMatch(/broken\.cpp:3:\d+: error/);
+
+        // a solution in a language without a grader is refused before anything runs
+        await writeFile(ana, id, "solutions/sum.c", "long long solve(int n, const int* values) { return 0; }\n");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "problem.yaml", `${manifest}  - { path: solutions/sum.c }\n`);
+        expect((await build(ana, id)).output.report.issues.map((issue: any) => issue.code)).toContain("grader.language");
+    }, 120_000);
+
+    it("builds a communication task: two runs of the solution with a manager in between", async () => {
+        const id = await createProblem(ana, "relay", "empty");
+        // run 1 compresses a list of numbers to at most 2 numbers; run 2 must recover their sum
+        await writeFile(ana, id, "manager.py", `import sys
+text = sys.stdin.read()
+separator = text.split("\\n", 1)[0]
+_, first_input, first_output, _ = text.split(separator + "\\n")
+tokens = first_output.split()
+if len(tokens) > MESSAGE_MAX or not all(token.lstrip("-").isdigit() for token in tokens):
+    sys.exit(f"the message may hold at most {MESSAGE_MAX} integers")
+print(" ".join(tokens))
+`);
+        await writeFile(ana, id, "solutions/relay.py", `phase = input()
+numbers = list(map(int, input().split()))
+if phase == "1":
+    print(sum(numbers))
+else:
+    print(numbers[0])
+`);
+        await writeFile(ana, id, "solutions/chatty.py", `phase = input()
+numbers = input().split()
+print(" ".join(numbers) if phase == "1" else sum(map(int, numbers)))
+`);
+        await writeFile(ana, id, "solutions/forgetful.py", `phase = input()
+numbers = list(map(int, input().split()))
+print(numbers[0])
+`);
+        await writeFile(ana, id, "tests/short.in", "4 5\n");
+        await writeFile(ana, id, "tests/long.in", "1 2 3 4 5\n");
+        await writeFile(ana, id, "problem.yaml", `name: relay
+type: communication
+limits: { time_ms: 2000, memory_mb: 256 }
+constraints: { MESSAGE: { max: 2 } }
+manager: manager.py
+groups:
+  - name: short
+    points: 30
+    tests: [{ manual: tests/short.in }]
+  - name: long
+    points: 70
+    tests: [{ manual: tests/long.in }]
+solutions:
+  - { path: solutions/relay.py, role: main }
+  - { path: solutions/chatty.py, expect: { short: AC, long: WA } }
+  - { path: solutions/forgetful.py, expect: WA }
+`);
+        const result = await build(ana, id);
+        expect(result.output.report.issues.filter((issue: any) => issue.severity === "error")).toEqual([]);
+        expect(result.result).toBe("green");
+        expect(result.output.report.solutions.map((solution: any) => [solution.path, solution.score])).toEqual([
+            ["solutions/relay.py", 100],
+            ["solutions/chatty.py", 30],
+            ["solutions/forgetful.py", 0],
+        ]);
+        // the answer is what the main solution's second run printed
+        const long = result.output.tests.find((test: any) => test.id === "long/1");
+        expect((await ana.get(`/problems/${id}/blobs/${long.answerHash}`)).raw.toString().trim()).toBe("15");
+        // five numbers do not fit the message: the manager's reason is on record
+        expect(result.output.matrix["solutions/chatty.py"]["long/1"]).toMatchObject({ verdict: "WA" });
+        expect(result.output.matrix["solutions/chatty.py"]["long/1"].message).toContain("at most 2 integers");
+        expect(result.output.matrix["solutions/forgetful.py"]["long/1"].message).toMatch(/line 1: expected "15", found "1"/);
+
+        // the bundle carries the manager with its constraints baked in
+        const committed = await ana.post(`/problems/${id}/revisions`, { message: "relay" });
+        await finished(harness, ana, committed.body.buildId);
+        const set = await ana.post(`/workspaces/${ana.workspaceId}/sets`, { name: "Relay round" });
+        await ana.put(`/sets/${set.body.id}/entries`, { entries: [{ label: "A", problemId: id, revisionId: committed.body.id }] });
+        const files = unzipSync(new Uint8Array((await ana.get(`/sets/${set.body.id}/export`)).raw));
+        expect(JSON.parse(Buffer.from(files["A/problem.json"]!).toString())).toMatchObject({ type: "communication", manager: { path: "manager.py", language: "python" } });
+        expect(Buffer.from(files["A/manager.py"]!).toString()).toContain("MESSAGE_MAX = 2");
+    }, 120_000);
+});
+
 describe("working copy", () => {
     it("rejects an edit based on a stale version of the file", async () => {
         const id = await createProblem(ana, "stale");

@@ -1,5 +1,6 @@
 import {
     buildReport,
+    composeGrader,
     builtinCheckerSource,
     Constraints,
     Issue,
@@ -280,11 +281,13 @@ export class Engine {
         main: Program,
         limits: { time_ms: number; memory_mb: number },
         inputs: Array<{ id: string; inputHash: string }>,
+        manager?: Program,
     ): Promise<Map<string, { hash: string } | { error: string }>> {
         type Answer = { hash: string } | { error: string };
         const sourceHash = sha256(main.source);
         const limit = measurementLimitMs(limits.time_ms);
-        const keyOfInput = (hash: string) => keyOf("ans", sourceHash, main.language, hash, limit, limits.memory_mb);
+        const keyOfInput = (hash: string) =>
+            keyOf("ans", sourceHash, main.language, hash, limit, limits.memory_mb, ...(manager ? [sha256(manager.source)] : []));
         const known = await this.cached<Answer>(inputs.map((input) => keyOfInput(input.inputHash)));
         const missing = new Map<string, string>();
         for (const input of inputs) {
@@ -297,13 +300,16 @@ export class Engine {
             const runInputs = [];
             for (const [key, hash] of pending.slice(offset, offset + RUN_SLICE))
                 runInputs.push({ id: key, stdin: await this.ctx.blobs.text(this.ctx.workspaceId, hash) });
-            const result = await this.exec({
-                program: main,
-                inputs: runInputs,
-                checking: "capture",
-                timeLimitMs: limit,
-                memoryLimitMb: limits.memory_mb,
-            });
+            const result = await this.execSolution(
+                {
+                    program: main,
+                    inputs: runInputs,
+                    checking: "capture",
+                    timeLimitMs: limit,
+                    memoryLimitMb: limits.memory_mb,
+                },
+                manager,
+            );
             const fresh: Array<Stored<Answer>> = [];
             if (result.compileError !== undefined) {
                 offset = pending.length;
@@ -335,7 +341,7 @@ export class Engine {
     async runSolution(
         solution: Program,
         checker: Judge | undefined,
-        task: { type: string; time_ms: number; memory_mb: number },
+        task: { type: string; time_ms: number; memory_mb: number; manager?: Program },
         tests: Array<{ id: string; inputHash: string; answerHash: string }>,
         remeasure = false,
     ): Promise<Map<string, RawRun & { key: string }>> {
@@ -343,7 +349,7 @@ export class Engine {
         const checkerId = checker ? sha256(checker.source) : "tokens";
         const limit = measurementLimitMs(task.time_ms);
         const keyOfTest = (test: { inputHash: string; answerHash: string }) =>
-            keyOf("run3", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type);
+            keyOf("run3", sourceHash, solution.language, test.inputHash, test.answerHash, checkerId, limit, task.memory_mb, task.type, ...(task.manager ? [sha256(task.manager.source)] : []));
         const known = remeasure ? new Map<string, RawRun>() : await this.cached<RawRun>(tests.map(keyOfTest));
         const missing = new Map<string, { inputHash: string; answerHash: string }>();
         for (const test of tests) {
@@ -363,14 +369,17 @@ export class Engine {
                     expected: await this.ctx.blobs.text(this.ctx.workspaceId, test.answerHash),
                 });
             }
-            const result = await this.exec({
-                program: solution,
-                inputs: runInputs,
-                checking: checker ? { source: checker.source, language: checker.language } : "tokens",
-                interactive: task.type === "interactive",
-                timeLimitMs: limit,
-                memoryLimitMb: task.memory_mb,
-            });
+            const result = await this.execSolution(
+                {
+                    program: solution,
+                    inputs: runInputs,
+                    checking: checker ? { source: checker.source, language: checker.language } : "tokens",
+                    interactive: task.type === "interactive",
+                    timeLimitMs: limit,
+                    memoryLimitMb: task.memory_mb,
+                },
+                task.manager,
+            );
             const fresh: Array<Stored<RawRun>> = [];
             if (result.compileError !== undefined) {
                 // nothing will compile on the next slice either
@@ -437,6 +446,86 @@ export class Engine {
             output.set(test.id, { ...raw, timeMs: measured && median !== undefined ? median : raw.timeMs, key });
         }
         return output;
+    }
+
+    /**
+     * Runs a solution. With a manager (communication tasks) it runs twice per test: first on
+     * "1" and the test; the manager then reads the test and what the first run printed and
+     * prints the input of the second run, which starts with "2". The second run's output is
+     * what gets checked. A manager that exits with an error rejects the first run's output.
+     */
+    private async execSolution(request: RunRequest, manager?: Program): Promise<RunResult> {
+        if (!manager) return this.exec(request);
+        const first = await this.exec({ ...request, checking: "capture", inputs: request.inputs.map((input) => ({ id: input.id, stdin: `1\n${input.stdin}` })) });
+        if (first.compileError !== undefined) return first;
+        const outcome = new Map<string, RunResult["runs"][number]>();
+        const passed = first.runs.filter((run) => run.status === "accepted");
+        for (const run of first.runs)
+            if (run.status !== "accepted") outcome.set(run.id, { ...run, stdout: undefined, message: `in the first run${run.message ? `: ${run.message}` : ""}` });
+        const original = new Map(request.inputs.map((input) => [input.id, input]));
+        const separator = `[${sha256(`manager:${request.inputs[0]?.id ?? ""}`)}]\n`;
+        const managed =
+            passed.length === 0
+                ? { runs: [] as RunResult["runs"], compileError: undefined }
+                : await this.exec({
+                      program: manager,
+                      inputs: passed.map((run) => ({ id: run.id, stdin: `${separator}${original.get(run.id)!.stdin}\n${separator}${run.stdout ?? ""}\n${separator}` })),
+                      checking: "capture",
+                      timeLimitMs: GENERATOR_LIMIT_MS,
+                      memoryLimitMb: TOOL_MEMORY_MB,
+                  });
+        if (managed.compileError !== undefined)
+            return { runs: request.inputs.map((input) => ({ id: input.id, status: "judge_error", timeMs: 0, memoryKb: 0, message: `the manager does not compile:\n${managed.compileError}`.slice(0, 2000) })) };
+        const firstById = new Map(first.runs.map((run) => [run.id, run]));
+        const second: typeof request.inputs = [];
+        for (const run of managed.runs) {
+            const before = firstById.get(run.id)!;
+            if (run.status === "accepted") second.push({ id: run.id, stdin: `2\n${run.stdout ?? ""}`, expected: original.get(run.id)!.expected });
+            else if (run.status === "runtime_error")
+                outcome.set(run.id, { id: run.id, status: "wrong_answer", timeMs: before.timeMs, memoryKb: before.memoryKb, message: `the manager rejected the first run's output: ${run.message?.trim() || "no reason given"}`.slice(0, 500) });
+            else outcome.set(run.id, { id: run.id, status: "judge_error", timeMs: 0, memoryKb: 0, message: `the manager failed (${run.status})${run.message ? `: ${run.message}` : ""}` });
+        }
+        if (second.length > 0) {
+            const last = await this.exec({ ...request, inputs: second });
+            if (last.compileError !== undefined) return last;
+            for (const run of last.runs) {
+                const before = firstById.get(run.id)!;
+                // the slower of the two runs is what the time limit applies to
+                outcome.set(run.id, {
+                    ...run,
+                    timeMs: Math.max(run.timeMs, before.timeMs),
+                    memoryKb: Math.max(run.memoryKb, before.memoryKb),
+                    message: run.message && run.status !== "accepted" && run.status !== "wrong_answer" && run.status !== "custom" ? `in the second run: ${run.message}` : run.message,
+                });
+            }
+        }
+        return { runs: request.inputs.map((input) => outcome.get(input.id) ?? { id: input.id, status: "judge_error" as const, timeMs: 0, memoryKb: 0, message: "no result" }) };
+    }
+
+    /** A solution as the judge runs it: on its own, or joined with the grader of a grader task. */
+    async solutionProgram(plan: Plan, solution: { path: string; source: string; language: Language }): Promise<Program> {
+        if (!plan.grader) return { source: solution.source, language: solution.language };
+        const graderPath = plan.grader.files[solution.language];
+        if (!graderPath) throw new Error(`The problem has no grader for ${solution.language}`);
+        const headers: Record<string, string> = {};
+        for (const header of plan.grader.headers) headers[header] = await this.read(header);
+        return {
+            language: solution.language,
+            source: composeGrader(solution, { path: graderPath, source: await this.read(graderPath) }, solution.language, headers),
+        };
+    }
+
+    /** The manager of a communication task, with the constraints prelude. */
+    async manager(plan: Plan): Promise<Program | undefined> {
+        if (!plan.manager) return undefined;
+        const program = await this.program(plan.manager.path);
+        return { language: program.language, source: withPrelude(program.source, program.language, plan.manifest.constraints) };
+    }
+
+    /** A solution of the package, ready to run. */
+    async solution(plan: Plan, path: string): Promise<Program> {
+        const program = await this.program(path);
+        return this.solutionProgram(plan, { path, ...program });
     }
 
     /**
@@ -764,6 +853,14 @@ export class Engine {
                 return { ...broken(), tests, groups: plan.groups };
             }
         }
+        const manager = await this.manager(plan);
+        if (manager) {
+            const compileError = await this.compiles(manager);
+            if (compileError !== null) {
+                error("manager.compile", `The manager does not compile:\n${compileError}`, plan.manager?.path);
+                return { ...broken(), tests, groups: plan.groups };
+            }
+        }
         progress("answers", 0, withInput.length);
         if (plan.manifest.type === "interactive") {
             const empty = await this.ctx.blobs.put(this.ctx.workspaceId, Buffer.alloc(0));
@@ -775,11 +872,12 @@ export class Engine {
             // a hand-written answer file wins; the main solution answers the rest
             const written = new Map(plan.tests.filter((test) => test.answer).map((test) => [test.id, test.answer!]));
             for (const test of withInput) if (written.has(test.id)) test.answerHash = this.ctx.tree[written.get(test.id)!]?.hash;
-            const main = await this.program(plan.main!.path);
+            const main = await this.solution(plan, plan.main!.path);
             const answers = await this.answers(
                 main,
                 limits,
                 withInput.filter((test) => !written.has(test.id)).map((test) => ({ id: test.id, inputHash: test.inputHash! })),
+                manager,
             );
             for (const [id, answer] of answers) {
                 const test = testById.get(id)!;
@@ -796,12 +894,12 @@ export class Engine {
             .map((test) => ({ id: test.id, inputHash: test.inputHash!, answerHash: test.answerHash! }));
         type Runnable = { path: string; program?: Program; outputs?: Record<string, string> };
         const solutions: Runnable[] = options.adhoc
-            ? [{ path: options.adhoc.name, program: { source: options.adhoc.source, language: options.adhoc.language } }]
+            ? [{ path: options.adhoc.name, program: await this.solutionProgram(plan, { path: options.adhoc.name, source: options.adhoc.source, language: options.adhoc.language }) }]
             : await Promise.all(
                   plan.solutions.map(async (solution) =>
                       solution.outputs
                           ? { path: solution.path, outputs: solution.outputs }
-                          : { path: solution.path, program: await this.program(solution.path) },
+                          : { path: solution.path, program: await this.solution(plan, solution.path) },
                   ),
               );
         const effectivePlan: Plan = options.adhoc
@@ -820,7 +918,7 @@ export class Engine {
                     const runs = await this.runSolution(
                         solution.program,
                         checker,
-                        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb },
+                        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb, manager },
                         runnable,
                         options.remeasure,
                     );

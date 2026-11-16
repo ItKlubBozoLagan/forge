@@ -19,7 +19,9 @@ export type Constraints = z.infer<typeof Constraints>;
 export const TASK_TYPES = ["batch", "interactive", "output-only", "communication", "grader"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 /** Task types the current runner protocol can execute. The rest can be described but not built. */
-export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive", "output-only"];
+export const RUNNABLE_TASK_TYPES: readonly TaskType[] = ["batch", "interactive", "output-only", "communication", "grader"];
+/** Languages a grader can be written in: the solution and the grader become one source file. */
+export const GRADER_LANGUAGES = ["c", "cpp", "python"] as const;
 
 const TestSpec = z.union([
     z
@@ -102,6 +104,24 @@ export const ManifestSchema = z
         constraints: Constraints.default({}),
         validator: FilePath.optional(),
         checker: Checker.optional(),
+        /**
+         * `type: grader`: the contestant implements functions and the grader holds `main`. One
+         * grader per language; `headers` are the files solutions and graders `#include`.
+         */
+        grader: z
+            .object({
+                c: FilePath.optional(),
+                cpp: FilePath.optional(),
+                python: FilePath.optional(),
+                headers: z.array(FilePath).default([]),
+            })
+            .strict()
+            .optional(),
+        /**
+         * `type: communication`: the solution runs twice; the manager turns the test and the
+         * first run's output into the second run's input.
+         */
+        manager: FilePath.optional(),
         /** Judge the problem is meant for; turns on warnings about what that judge cannot score. */
         judge: z.enum(["kontestis"]).optional(),
         generators: z.record(Identifier, FilePath).default({}),
@@ -172,6 +192,10 @@ export type Plan = {
     checker?: { path: string; language: Language };
     /** A checker Forge generates: `lines`, `float` or `yesno` (`tokens` is the judge's default). */
     builtinChecker?: { kind: Exclude<BuiltinChecker, "tokens">; eps: number };
+    /** `type: grader`: the grader file per language and the headers they share with solutions. */
+    grader?: { files: Partial<Record<Language, string>>; headers: string[] };
+    /** `type: communication`: the program run between a solution's two runs. */
+    manager?: { path: string; language: Language };
     statements: Record<string, string>;
 };
 
@@ -265,6 +289,27 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
         error("checker.missing", "Interactive tasks need an interactor program as the checker, not a built-in one");
     if (manifest.type === "interactive" && !manifest.checker)
         error("checker.missing", "Interactive tasks need a checker (the interactor)");
+
+    let grader: Plan["grader"];
+    if (manifest.type === "grader") {
+        const files: Partial<Record<Language, string>> = {};
+        for (const language of GRADER_LANGUAGES) {
+            const path = manifest.grader?.[language];
+            if (!path) continue;
+            if (!fileSet.has(path)) error("file.missing", `Grader ${path} does not exist`, path);
+            else if (languageOf(path) !== language) error("grader.language", `Grader ${path} is listed under "${language}" but is not a ${language} file`, path);
+            else files[language] = path;
+        }
+        for (const header of manifest.grader?.headers ?? []) if (!fileSet.has(header)) error("file.missing", `Header ${header} does not exist`, header);
+        if (Object.keys(files).length === 0 && !issues.some((issue) => issue.severity === "error"))
+            error("grader.missing", "A grader task needs a grader for at least one language: grader: { cpp: grader.cpp }");
+        grader = { files, headers: (manifest.grader?.headers ?? []).filter((header) => fileSet.has(header)) };
+    } else if (manifest.grader) warning("grader.unused", `grader is only used by type: grader, not by "${manifest.type}"`);
+    let manager: Plan["manager"];
+    if (manifest.type === "communication") {
+        if (!manifest.manager) error("manager.missing", "A communication task needs a manager: the program run between the solution's two runs");
+        else manager = program(manifest.manager, "Manager");
+    } else if (manifest.manager) warning("manager.unused", `manager is only used by type: communication, not by "${manifest.type}"`);
 
     const generators: Record<string, { path: string; language: Language }> = {};
     for (const [name, path] of Object.entries(manifest.generators)) {
@@ -427,6 +472,12 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
             resolved = { path: solution.path, outputs };
         } else resolved = program(solution.path, "Solution");
         if (!resolved) continue;
+        if (grader && resolved.language && !grader.files[resolved.language])
+            error(
+                "grader.language",
+                `Solution ${solution.path} is written in ${resolved.language}, for which the problem has no grader`,
+                solution.path,
+            );
         const main = solution.role === "main";
         const expect: Record<string, string> = {};
         if (main && solution.expect !== undefined && solution.expect !== "AC")
@@ -479,7 +530,7 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     // the constants prelude exists for C, C++ and Python only
     const hasConstraints = Object.keys(manifest.constraints).length > 0 || manifest.groups.some((group) => Object.keys(group.constraints).length > 0);
     if (hasConstraints)
-        for (const tool of [validator, checker, ...Object.values(generators)])
+        for (const tool of [validator, checker, manager, ...Object.values(generators)])
             if (tool && !PRELUDE_LANGUAGES.includes(tool.language))
                 warning(
                     "prelude.unsupported",
@@ -490,6 +541,8 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
     // what kontestis cannot score today
     if (manifest.judge === "kontestis") {
         const incompatible = (message: string, ref?: string) => warning("kontestis.incompatible", `kontestis: ${message}`, ref);
+        if (manifest.type === "grader" || manifest.type === "communication")
+            incompatible(`it has no "${manifest.type}" tasks: it runs the contestant's file alone, once per test`);
         if (manifest.scoring.mode === "binary")
             incompatible("there is no binary (all-or-nothing) scoring; clusters are summed, so give one cluster all the points");
         for (const group of manifest.groups) {
@@ -515,6 +568,8 @@ export const planBuild = (manifest: Manifest, files: readonly string[]): { plan:
             validator,
             checker,
             builtinChecker,
+            grader,
+            manager,
             statements,
         },
         issues,

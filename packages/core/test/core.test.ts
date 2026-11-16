@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    composeGrader,
     buildReport,
     judge,
     Matrix,
@@ -74,10 +75,33 @@ describe("manifest", () => {
         expect(codes(BASE.replace("seed={i}", "seed=1"))).toContain("test.count");
     });
 
-    it("marks task types the current runner cannot execute", () => {
-        const { plan: built, issues } = plan(BASE.replace("name: demo", "name: demo\ntype: communication"), FILES);
-        expect(built.runnable).toBe(false);
-        expect(issues.map((issue) => issue.code)).toContain("type.not-runnable");
+    it("checks what grader and communication tasks need", () => {
+        const codes = (text: string, files = FILES) => plan(text, files).issues.map((issue) => issue.code);
+        expect(codes(BASE.replace("name: demo", "name: demo\ntype: communication"))).toContain("manager.missing");
+        expect(codes(BASE.replace("name: demo", "name: demo\ntype: grader"))).toContain("grader.missing");
+        // a solution needs a grader in its own language
+        const python = BASE.replace("name: demo", "name: demo\ntype: grader\ngrader: { python: grader.py }");
+        expect(codes(python, [...FILES, "grader.py"])).toContain("grader.language");
+        const built = plan(BASE.replace("name: demo", "name: demo\ntype: grader\ngrader: { cpp: grader.cpp, python: grader.py, headers: [task.h] }"), [...FILES, "grader.cpp", "grader.py", "task.h"]);
+        expect(built.issues.filter((issue) => issue.severity === "error")).toEqual([]);
+        expect(built.plan.grader).toEqual({ files: { cpp: "grader.cpp", python: "grader.py" }, headers: ["task.h"] });
+    });
+
+    it("joins a solution and its grader into one program", () => {
+        const joined = composeGrader(
+            { path: "solutions/sol.cpp", source: '#include "task.h"\nint twice(int x) { return 2 * x; }\n' },
+            { path: "grader/grader.cpp", source: '#include <cstdio>\n#include "task.h"\nint main() { printf("%d", twice(4)); }\n' },
+            "cpp",
+            { "grader/task.h": "int twice(int x);" },
+        );
+        // the header is inlined once, and compiler messages keep each file's own line numbers
+        expect(joined.match(/int twice\(int x\);/g)).toHaveLength(1);
+        expect(joined).toContain('#line 1 "sol.cpp"');
+        expect(joined).toContain('#line 2 "sol.cpp"');
+        expect(joined).toContain('#line 1 "grader.cpp"');
+        expect(joined.indexOf("int twice(int x) {")).toBeLessThan(joined.indexOf("int main()"));
+        const python = composeGrader({ path: "sol.py", source: "def twice(x):\n    return 2 * x\n" }, { path: "grader.py", source: "print(twice(int(input())))\n" }, "python", {});
+        expect(python.indexOf("def twice")).toBeLessThan(python.indexOf("print(twice"));
     });
 
     it("accepts a directory of outputs as a solution of an output-only task", () => {

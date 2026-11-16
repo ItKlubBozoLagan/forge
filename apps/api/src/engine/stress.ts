@@ -73,11 +73,12 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
     }
 
     const limits = plan.manifest.limits;
+    const manager = await engine.manager(plan);
     // the interactor judges an interactive task on its own; there is no reference answer to make
     const answers =
         plan.manifest.type === "interactive"
             ? new Map(valid.map((input) => [input.id, { hash: EMPTY_HASH }] as const))
-            : await engine.answers(await engine.program(plan.main.path), limits, valid);
+            : await engine.answers(await engine.solution(plan, plan.main.path), limits, valid, manager);
     if (plan.manifest.type === "interactive") await engine.putEmpty();
     const tests = [];
     for (const input of valid) {
@@ -96,9 +97,9 @@ export const runStress = async (engine: Engine, params: StressParams): Promise<S
 
     const checker = await engine.checker(plan);
     const runs = await engine.runSolution(
-        await engine.program(candidate.path),
+        await engine.solution(plan, candidate.path),
         checker,
-        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb },
+        { type: plan.manifest.type, time_ms: limits.time_ms, memory_mb: limits.memory_mb, manager },
         tests,
     );
     for (const test of tests) {

@@ -63,7 +63,33 @@ solutions:
 | `batch` | A program reads the test on stdin and prints an answer; compared by the judge's default comparison, or by `checker` | `plain`, `checker` |
 | `interactive` | A program talks to the interactor named in `checker` | `interactive` |
 | `output-only` | Output files the contestant submits; no program of theirs runs | `output-only` |
-| `communication`, `grader` | Can be described but not built: the evaluator runs one single-file program per submission | none |
+| `grader` | The contestant implements functions; the problem's grader holds `main` and calls them | none |
+| `communication` | The solution runs twice per test, with the problem's manager turning the first run's output into the second run's input | none |
+
+**Grader tasks.** `grader: { cpp: grader/grader.cpp, python: grader/grader.py, headers:
+[grader/task.h] }` names one grader per language (C, C++, Python) and the headers they share
+with solutions. The judge compiles a single file, so a solution is judged as its own file
+followed by the grader, with each header inlined where it is first included. Compiler messages
+keep the original file names and line numbers. Both files end up in one translation unit, so a
+helper with the same name in the grader and in a solution clashes: keep the grader's helpers in
+a namespace or give them a prefix. A solution in a language without a grader is an error.
+
+**Communication tasks.** `manager: manager.py` names the program that runs between a
+solution's two runs:
+
+1. the solution reads `1` on the first line and then the test, and prints a message;
+2. the manager reads a stream in the checker's layout (separator line, the test, separator, the
+   message, separator) and prints the input of the second run; exiting with an error and a
+   reason on stderr rejects the message, which is a wrong answer;
+3. the solution reads `2` on the first line and then what the manager printed; its output is
+   compared with the main solution's (or given to the checker, which receives the second
+   run's input as the test).
+
+Each run has the full time limit and the slower one is reported. Two processes of the
+contestant talking to each other at the same time are not supported: the evaluator runs one
+program per evaluation.
+
+kontestis judges neither of these two types today; `judge: kontestis` says so in the build.
 
 **Output-only tasks.** A solution is either a program, run like in a batch task to print the
 output of each test, or a directory of outputs with one file per test at

@@ -89,8 +89,9 @@ one, so re-measuring steadies a borderline verdict.
 - Test data travels inline in the message, so batches are split and very large tests are slow.
 - Programs are a single file and get no command-line arguments; generators read their arguments
   from stdin.
-- Batch, interactive and output-only tasks only: one single-file program per evaluation rules out
-  grader tasks (multi-file compilation) and communication tasks (several contestant processes).
+- One single-file program per evaluation. Grader tasks are built by joining the solution and
+  the grader into one source, and two-phase communication tasks by chaining ordinary runs; two
+  contestant processes running at once cannot be expressed.
 - An output-only evaluation carries one output and one test, so every submitted file is its own
   message.
 - Results do not say which instance ran a job, so timing samples are attributed to the
@@ -107,7 +108,7 @@ changes:
    testcase files to object references).
 2. **A generic run step**: program + argv + input blobs → output blobs + resource usage. This
    covers generators, validators, checkers and solutions with one job type.
-3. **Multi-file programs and task types**: graders and communication tasks.
+3. **Multi-file programs and several processes**: graders without source joining, and communication tasks whose processes run at the same time.
 4. **Instance identity and priority classes** in the protocol: per-machine timing samples, and
    judging that pre-empts prep work on shared instances.
 

@@ -7,3 +7,4 @@ export * from "./verdicts";
 export * from "./templates";
 export * from "./checkers";
 export * from "./edit";
+export * from "./grader";

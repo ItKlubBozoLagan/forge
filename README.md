@@ -124,10 +124,11 @@ control, problem sets and judge bundle export, Polygon import, OAuth sign-in, we
 
 Not done, and why:
 
-- **Communication and grader tasks.** They can be described but not built. The evaluator runs
-  one single-file program per submission; these need several contestant processes or
-  multi-file compilation, which is a change to the evaluator
-  ([architecture.md](docs/architecture.md#the-runner)).
+- **Simultaneous communication.** Grader tasks and two-phase communication tasks (two runs
+  with a manager in between) build. Two contestant processes talking to each other at the same
+  time do not: the evaluator runs one program per evaluation
+  ([architecture.md](docs/architecture.md#the-runner)). kontestis itself judges neither grader
+  nor communication tasks yet, and the Structure tab edits `grader` and `manager` as text only.
 - **Comments from hand-written checkers.** The evaluator returns only a verdict. Forge still
   shows why an output was rejected for the default comparison, built-in checkers and testlib
   checkers (it runs those once more to print their comment); a checker written to Forge's own

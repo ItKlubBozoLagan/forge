@@ -166,6 +166,27 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 files[`${base}${name}`] = strToU8(checkerProgram.source);
                 checker = { path: name, language: checkerProgram.language };
             }
+            // what a judge needs to run grader and communication tasks the way Forge did
+            const extras: Record<string, unknown> = {};
+            if (plan.grader) {
+                const graders: Record<string, string> = {};
+                for (const [language, path] of Object.entries(plan.grader.files)) {
+                    files[`${base}grader/${path.split("/").pop()}`] = await read(tree[path]!.hash);
+                    graders[language] = `grader/${path.split("/").pop()}`;
+                }
+                const headers = [];
+                for (const path of plan.grader.headers) {
+                    files[`${base}grader/${path.split("/").pop()}`] = await read(tree[path]!.hash);
+                    headers.push(`grader/${path.split("/").pop()}`);
+                }
+                extras.grader = { files: graders, headers };
+            }
+            const managerProgram = await engine.manager(plan);
+            if (managerProgram && plan.manager) {
+                const name = `manager.${plan.manager.path.split(".").pop()}`;
+                files[`${base}${name}`] = strToU8(managerProgram.source);
+                extras.manager = { path: name, language: managerProgram.language };
+            }
             // kontestis stores a reference solution with every problem
             let solution = null;
             if (plan.main?.language) {
@@ -184,6 +205,7 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
                 scoring: plan.manifest.scoring.mode,
                 checker: checker ?? null,
                 solution,
+                ...extras,
                 inputFraming: judge?.framed ? "length-prefixed" : "none",
                 titles: typeof title === "string" || !title ? {} : title,
                 groups: plan.groups.map((group) => ({

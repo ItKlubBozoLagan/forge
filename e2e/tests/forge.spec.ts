@@ -396,3 +396,49 @@ test("shows a figure from the package in the statement", async ({ page }) => {
     // the browser decoded it: an image served with the wrong type has no size
     await expect.poll(() => figure.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(40);
 });
+
+const writeFiles = async (page: import("@playwright/test").Page, id: string, files: Record<string, string>) => {
+    const headers = { "X-Forge-Csrf": "1", "content-type": "application/octet-stream" };
+    for (const [path, content] of Object.entries(files))
+        expect((await page.request.put(`/api/problems/${id}/file?path=${encodeURIComponent(path)}`, { headers, data: Buffer.from(content) })).ok()).toBe(true);
+};
+
+test("builds a grader task, where solutions implement a function", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Grader Task", "empty");
+    await writeFiles(page, id, {
+        "grader/task.h": "long long solve(int n, const int* values);\n",
+        "grader/grader.cpp": `#include <cstdio>\n#include <vector>\n#include "task.h"\nint main() {\n    int n;\n    if (scanf("%d", &n) != 1) return 1;\n    std::vector<int> values(n);\n    for (int& value : values) scanf("%d", &value);\n    printf("%lld\\n", solve(n, values.data()));\n}\n`,
+        "grader/grader.py": "n = int(input())\nvalues = list(map(int, input().split()))\nprint(solve(n, values))\n",
+        "solutions/sum.cpp": `#include "task.h"\nlong long solve(int n, const int* values) {\n    long long total = 0;\n    for (int i = 0; i < n; i++) total += values[i];\n    return total;\n}\n`,
+        "solutions/first.py": "def solve(n, values):\n    return values[0]\n",
+        "tests/one.in": "1\n5\n",
+        "tests/three.in": "3\n1 2 3\n",
+        "problem.yaml": `name: grader-task\ntitle: Grader Task\ntype: grader\nlimits: { time_ms: 2000, memory_mb: 256 }\ngrader: { cpp: grader/grader.cpp, python: grader/grader.py, headers: [grader/task.h] }\ngroups:\n  - name: easy\n    points: 40\n    tests: [{ manual: tests/one.in }]\n  - name: all\n    points: 60\n    tests: [{ manual: tests/three.in }]\nsolutions:\n  - { path: solutions/sum.cpp, role: main }\n  - { path: solutions/first.py, expect: { easy: AC, all: WA } }\n`,
+    });
+    await page.goto(`/p/${id}/files`);
+    await build(page, "green");
+    await expect(page.getByTestId("build-tools")).toContainText("grader");
+    await expect(page.getByTestId("cell-solutions/sum.cpp-all/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/first.py-all/1")).toContainText("WA");
+});
+
+test("builds a communication task, with a manager between the solution's two runs", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "Relay Task", "empty");
+    await writeFiles(page, id, {
+        "manager.py": `import sys\ntext = sys.stdin.read()\nseparator = text.split("\\n", 1)[0]\n_, first_input, first_output, _ = text.split(separator + "\\n")\ntokens = first_output.split()\nif len(tokens) > MESSAGE_MAX:\n    sys.exit(f"the message may hold at most {MESSAGE_MAX} integers")\nprint(" ".join(tokens))\n`,
+        "solutions/relay.py": `phase = input()\nnumbers = list(map(int, input().split()))\nprint(sum(numbers) if phase == "1" else numbers[0])\n`,
+        "solutions/chatty.py": `phase = input()\nnumbers = input().split()\nprint(" ".join(numbers) if phase == "1" else sum(map(int, numbers)))\n`,
+        "tests/short.in": "4 5\n",
+        "tests/long.in": "1 2 3 4 5\n",
+        "problem.yaml": `name: relay-task\ntitle: Relay Task\ntype: communication\nlimits: { time_ms: 2000, memory_mb: 256 }\nconstraints: { MESSAGE: { max: 2 } }\nmanager: manager.py\ngroups:\n  - name: short\n    points: 30\n    tests: [{ manual: tests/short.in }]\n  - name: long\n    points: 70\n    tests: [{ manual: tests/long.in }]\nsolutions:\n  - { path: solutions/relay.py, role: main }\n  - { path: solutions/chatty.py, expect: { short: AC, long: WA } }\n`,
+    });
+    await page.goto(`/p/${id}/files`);
+    await build(page, "green");
+    await expect(page.getByTestId("cell-solutions/relay.py-long/1")).toContainText("AC");
+    await expect(page.getByTestId("cell-solutions/chatty.py-long/1")).toContainText("WA");
+    // the manager's reason for rejecting the first run is shown with the test
+    await page.getByRole("button", { name: "long/1" }).first().click();
+    await expect(page.getByRole("dialog")).toContainText("at most 2 integers");
+});
