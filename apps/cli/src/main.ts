@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
-import { languageOf } from "@forge/core";
+import { TEMPLATE_FORMATS, languageOf } from "@forge/core";
 import { Command } from "commander";
 
 import { ApiError, Client, CliError } from "./client";
@@ -57,10 +57,11 @@ const cloneInto = async (client: Client, problemId: string, dir?: string) => {
     info(`cloned problem ${problem.name} (${problemId}) into ${target} (${Object.keys(hashes).length} files)`);
 };
 
-const run = async (cp: Checkout, build: { revision?: string; remeasure?: boolean }, json: boolean): Promise<number> => {
+const run = async (cp: Checkout, build: { revision?: string; remeasure?: boolean; clean?: boolean }, json: boolean): Promise<number> => {
     const { id } = await cp.client.post<{ id: string }>(`/problems/${cp.state.problemId}/builds`, {
         ...(build.revision ? { revision: build.revision } : {}),
         ...(build.remeasure ? { remeasure: true } : {}),
+        ...(build.clean ? { clean: true } : {}),
     });
     return showBuild(cp.client, id, json);
 };
@@ -151,11 +152,11 @@ program
     .description("create a problem and clone it")
     .argument("[dir]", "target directory (default: the name)")
     .requiredOption("--title <title>", "problem title")
-    .option("--template <template>", "ioi|icpc|honi|interactive|output-only|empty", "ioi")
+    .option("--template <template>", TEMPLATE_FORMATS.join("|"), "ioi")
     .option("--workspace <id>", "workspace id")
     .action(
         act(async (name: string, dir: string | undefined, opts: { title: string; template: string; workspace?: string }) => {
-            if (!["ioi", "icpc", "honi", "interactive", "output-only", "empty"].includes(opts.template)) throw new CliError(`unknown template ${opts.template}`);
+            if (!(TEMPLATE_FORMATS as readonly string[]).includes(opts.template)) throw new CliError(`unknown template ${opts.template}`);
             const client = makeClient();
             const workspace = await pickWorkspace(client, opts.workspace);
             const created = await client.post<{ id: string; name: string }>(`/workspaces/${workspace}/problems`, {
@@ -216,10 +217,11 @@ program
     .description("push, build and show the result")
     .option("--no-push", "do not push local changes first")
     .option("--remeasure", "re-measure timings")
+    .option("--clean", "ignore cached results and rebuild everything")
     .option("--revision <id>", "build a revision instead of the working copy")
     .option("--json", "print the raw build JSON")
     .action(
-        act(async (opts: { push: boolean; remeasure?: boolean; revision?: string; json?: boolean }) => {
+        act(async (opts: { push: boolean; remeasure?: boolean; clean?: boolean; revision?: string; json?: boolean }) => {
             const cp = checkout();
             if (opts.push && !opts.revision) await push(cp);
             return run(cp, opts, Boolean(opts.json));
@@ -257,6 +259,7 @@ program
             const language = opts.language ?? languageOf(file);
             if (!language) throw new CliError(`cannot infer the language of ${file}; pass --language`);
             if (!existsSync(file)) throw new CliError(`no such file: ${file}`);
+            await push(cp); // invocations run against the working copy on the server
             const { id } = await cp.client.post<{ id: string }>(`/problems/${cp.state.problemId}/invocations`, {
                 name: opts.name ?? basename(file),
                 language,
@@ -316,6 +319,34 @@ program
             for (const i of out.invalid) info(`invalid test (generator bug)  ${i.args}: ${i.message}`);
             for (const f of out.failures) info(`${red("FAIL")} ${f.verdict} args: ${f.args}${f.message ? `  ${f.message}` : ""} (${f.timeMs}ms)`);
             return out.failures.length + out.invalid.length + out.errors.length > 0 ? 1 : 0;
+        }),
+    );
+
+program
+    .command("download [target]")
+    .description("download the package archive, or a build's tests, as a zip")
+    .option("--tests <buildId>", "download the tests of this build")
+    .option("--revision <id>", "download the archive of a revision")
+    .action(
+        act(async (target: string | undefined, opts: { tests?: string; revision?: string }) => {
+            let client = makeClient();
+            let path = `/builds/${opts.tests}/tests.zip`;
+            if (!opts.tests) {
+                const cp = checkout();
+                client = cp.client;
+                path = `/problems/${cp.state.problemId}/archive${opts.revision ? `?revision=${encodeURIComponent(opts.revision)}` : ""}`;
+            }
+            const response = await client.raw("GET", path);
+            const disposition = response.headers.get("content-disposition") ?? "";
+            const suggested = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+            const name = suggested ? basename(decodeURIComponent(suggested)) : opts.tests ? "tests.zip" : "package.zip";
+            let file = resolve(name);
+            if (target) {
+                const given = resolve(target);
+                file = existsSync(given) && statSync(given).isDirectory() ? resolve(given, name) : given;
+            }
+            writeFileSync(file, new Uint8Array(await response.arrayBuffer()));
+            info(`saved ${file}`);
         }),
     );
 

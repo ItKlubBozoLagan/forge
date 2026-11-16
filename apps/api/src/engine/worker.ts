@@ -45,11 +45,11 @@ export class Worker {
 
     /** Resolves once no build is queued or running; used by tests. */
     async idle(): Promise<void> {
-        if (this.active === 0) {
-            const queued = await this.sql`select 1 from builds where status = 'queued' limit 1`;
-            if (queued.length === 0) return;
-        }
-        await new Promise<void>((resolve) => this.idleWaiters.push(resolve));
+        // a build is marked running in the database a moment before it counts as active here
+        const open = await this.sql`select 1 from builds where status in ('queued', 'running') limit 1`;
+        if (this.active === 0 && open.length === 0) return;
+        if (this.active === 0) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        else await new Promise<void>((resolve) => this.idleWaiters.push(resolve));
         return this.idle();
     }
 

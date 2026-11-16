@@ -27,6 +27,7 @@ import {
     setGenerator,
     setLimits,
     setMainSolution,
+    setJudge,
     setScoringMode,
     setTitle,
     setType,
@@ -85,6 +86,19 @@ describe("manifest edits", () => {
         // scoring is added next to limits, not at the end
         expect(text.indexOf("scoring:")).toBeLessThan(text.indexOf("constraints:"));
         expect(setTitle("name: x\ntitle: { en: A, hr: B }\n", "C")).toContain("title: { en: C, hr: B }");
+    });
+
+    it("sets and clears the target judge", () => {
+        const text = setJudge(IOI, "kontestis");
+        expect(valid(text).judge).toBe("kontestis");
+        // placed right after type, before limits
+        expect(text.indexOf("judge:")).toBeGreaterThan(text.indexOf("type:"));
+        expect(text.indexOf("judge:")).toBeLessThan(text.indexOf("limits:"));
+        expect(readManifestDraft(text).draft?.judge).toBe("kontestis");
+        const cleared = setJudge(text, undefined);
+        expect(cleared).not.toContain("judge:");
+        expect(cleared).toBe(IOI);
+        expect(setJudge(IOI, undefined)).toBe(IOI);
     });
 
     it("sets and clears the validator and checker", () => {

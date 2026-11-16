@@ -1,6 +1,6 @@
 # The interactor receives the test on stdin, then one extra newline, then everything the
 # solution prints. Read the solution's output token by token so blank lines do not matter.
-# What it prints goes to the solution. Its verdict (AC, WA or custom:<score>) is written to
+# What it prints goes to the solution. Its verdict (AC, WA or custom:partial:<score>) is written to
 # interactor_meta.out. N_MAX and Q_MAX come from the constraints in problem.yaml.
 import sys
 

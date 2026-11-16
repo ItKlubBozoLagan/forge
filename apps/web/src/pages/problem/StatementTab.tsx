@@ -27,34 +27,27 @@ const PLACEHOLDER_HINT = (
 );
 
 /**
- * Resolves a relative URL in the statement to the package file it names: a path that already
- * starts with the statement's folder (`statement/figure.png`) is taken as a package path,
- * anything else as relative to the statement file. Absolute URLs are left alone.
+ * Resolves a relative URL in the statement to the statement asset route, which everyone who can
+ * see the statement may call: a path that starts with `statement/` is taken as a package path,
+ * anything else as relative to the folder `statement/`. Absolute URLs are left alone.
  */
-const statementUrl = (problemId: string, statementPath: string | undefined) => {
-    const dir = statementPath?.includes("/")
-        ? statementPath.slice(0, statementPath.lastIndexOf("/"))
-        : "";
-    return (url: string) => {
-        if (!statementPath || /^([a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(url))
-            return defaultUrlTransform(url);
-        const [path = "", rest = ""] = url.split(/(?=[?#])/, 2);
-        const base = dir && (path === dir || path.startsWith(`${dir}/`)) ? "" : dir;
-        const parts: string[] = [];
-        for (const part of (base ? `${base}/${path}` : path).split("/")) {
-            if (part === "" || part === ".") continue;
-            if (part === "..") parts.pop();
-            else parts.push(part);
-        }
-        let resolved = parts.join("/");
-        try {
-            resolved = decodeURIComponent(resolved);
-        } catch {
-            // keep it as written
-        }
-        const hash = rest.startsWith("#") ? rest : "";
-        return `/api/problems/${problemId}/file${q({ path: resolved })}${hash}`;
-    };
+const statementUrl = (problemId: string, language: string | undefined) => (url: string) => {
+    if (/^([a-z][a-z0-9+.-]*:|\/|#|\?)/i.test(url)) return defaultUrlTransform(url);
+    const [path = "", rest = ""] = url.split(/(?=[?#])/, 2);
+    const parts: string[] = [];
+    for (const part of (path.startsWith("statement/") ? path : `statement/${path}`).split("/")) {
+        if (part === "" || part === ".") continue;
+        if (part === "..") parts.pop();
+        else parts.push(part);
+    }
+    let resolved = parts.join("/");
+    try {
+        resolved = decodeURIComponent(resolved);
+    } catch {
+        // keep it as written
+    }
+    const hash = rest.startsWith("#") ? rest : "";
+    return `/api/problems/${problemId}/statement/asset${q({ path: resolved, lang: language })}${hash}`;
 };
 
 type Draft = { path: string; base?: string; original: string; text: string };
@@ -192,8 +185,8 @@ export const StatementTab = () => {
 
     const data = statement.data;
     const urlTransform = useMemo(
-        () => statementUrl(problem.id, draft?.path ?? data?.path),
-        [problem.id, draft?.path, data?.path],
+        () => statementUrl(problem.id, data?.language ?? undefined),
+        [problem.id, data?.language],
     );
 
     if (statement.isPending) return <Loading />;

@@ -35,6 +35,7 @@ const TOP_ORDER = [
     "name",
     "title",
     "type",
+    "judge",
     "limits",
     "scoring",
     "constraints",
@@ -298,6 +299,10 @@ export const setTitle = (text: string, title: string, language?: string) =>
 
 export const setType = (text: string, type: string) =>
     edit(text, (doc, root) => setKey(doc, root, "type", type, TOP_ORDER));
+
+/** Sets the target judge, or removes the key when `judge` is undefined. */
+export const setJudge = (text: string, judge: "kontestis" | undefined) =>
+    edit(text, (doc, root) => setKey(doc, root, "judge", judge, TOP_ORDER));
 
 export const setLimits = (text: string, limits: { time_ms?: number; memory_mb?: number }) =>
     edit(text, (doc, root) => {
@@ -756,6 +761,7 @@ export type ManifestDraft = {
     name?: string;
     title?: string | Record<string, string>;
     type?: string;
+    judge?: string;
     limits: { time_ms?: number; memory_mb?: number };
     scoring: { mode?: string };
     constraints: Record<string, BoundEdit>;
@@ -859,6 +865,7 @@ export const readManifestDraft = (
         name: str(raw.name),
         title: isRecord(raw.title) ? strings(raw.title) : str(raw.title),
         type: str(raw.type),
+        judge: str(raw.judge),
         limits: clean({ time_ms: num(limits.time_ms), memory_mb: num(limits.memory_mb) }),
         scoring: clean({ mode: str(scoring.mode) }),
         constraints: bounds(raw.constraints, "constraints", problems),

@@ -407,13 +407,27 @@ describe("package handling", () => {
         // generation, validation, answers and every solution ran again
         expect(harness.runner.calls).toBeGreaterThanOrEqual(before + 6);
 
+        // hold the runner so the build is certainly in the middle of its first step
+        let release!: () => void;
+        harness.runner.gate = new Promise<void>((resolve) => (release = resolve));
+        const reached = new Promise<void>((resolve) => (harness.runner.onRun = resolve));
         const queued = await ana.post(`/problems/${id}/builds`, { clean: true });
+        await reached;
+        expect((await ana.get(`/builds/${queued.body.id}`)).body.status).toBe("running");
+        const atCancel = harness.runner.calls;
         expect((await ana.post(`/builds/${queued.body.id}/cancel`)).status).toBe(200);
+        release();
+        harness.runner.gate = undefined;
+        harness.runner.onRun = undefined;
         await harness.app.worker.idle();
         const cancelled = await ana.get(`/builds/${queued.body.id}`);
         expect(cancelled.body.status).toBe("failed");
         expect(cancelled.body.error).toBe("Cancelled by Ana");
+        expect(cancelled.body.output).toBeNull();
+        // steps already asked for stop at the gate; nothing after them is started
+        expect(harness.runner.calls).toBeLessThanOrEqual(atCancel + 2);
         expect((await ana.post(`/builds/${queued.body.id}/cancel`)).status).toBe(409);
+        expect((await build(ana, id)).result).toBe("green");
     });
 
     it("only serves a problem its own content, even inside one workspace", async () => {
@@ -525,6 +539,88 @@ describe("polygon import", () => {
     }, 180_000);
 });
 
+describe("second audit", () => {
+    it("serves statement figures to blind testers and with a usable content type", async () => {
+        const id = await createProblem(ana, "figures");
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>';
+        await writeFile(ana, id, "statement/figure.svg", svg);
+        const own = await harness.server.inject({ method: "GET", url: `/api/problems/${id}/statement/asset?path=statement/figure.svg`, headers: ana.headers });
+        expect(own.statusCode).toBe(200);
+        expect(own.headers["content-type"]).toBe("image/svg+xml");
+        expect(own.headers["content-security-policy"]).toContain("sandbox");
+        // only statement assets, never the statement source or other package files
+        expect((await ana.get(`/problems/${id}/statement/asset?path=statement/en.md`)).status).toBe(404);
+        expect((await ana.get(`/problems/${id}/statement/asset?path=solutions/main.cpp`)).status).toBe(404);
+
+        const cara = await login(harness, "Cara");
+        await ana.post(`/workspaces/${ana.workspaceId}/members`, { email: "cara@dev.local" });
+        await ana.put(`/problems/${id}/access/${cara.userId}`, { role: "tester" });
+        // testers see the latest revision; nothing is committed yet
+        expect((await cara.get(`/problems/${id}/statement/asset?path=statement/figure.svg`)).status).toBe(404);
+        const committed = await ana.post(`/problems/${id}/revisions`, { message: "With a figure" });
+        await finished(harness, ana, committed.body.buildId);
+        expect((await cara.get(`/problems/${id}/statement/asset?path=statement/figure.svg`)).raw.toString()).toBe(svg);
+        expect((await cara.get(`/problems/${id}/file?path=statement/figure.svg`)).status).toBe(403);
+    });
+
+    it("keeps at least one owner in a workspace", async () => {
+        const demoted = await ana.post(`/workspaces/${ana.workspaceId}/members`, { email: "ana@dev.local", role: "member" });
+        expect(demoted.status).toBe(409);
+        expect((await ana.get(`/workspaces/${ana.workspaceId}/members`)).body.find((member: any) => member.id === ana.userId).role).toBe("owner");
+    });
+
+    it("needs a session to probe the runner", async () => {
+        expect((await harness.server.inject({ method: "GET", url: "/api/health" })).json().ok).toBe(true);
+        expect((await harness.server.inject({ method: "GET", url: "/api/health?runner=1" })).statusCode).toBe(401);
+        expect((await ana.get("/health?runner=1")).body.runner.alive).toBe(true);
+    });
+
+    it("decides a verdict by the median of the measured times", async () => {
+        const id = await createProblem(ana, "median");
+        // a solution no other test has measured, so its samples are only the ones below
+        await writeFile(ana, id, "solutions/main.cpp", `${await readFile(ana, id, "solutions/main.cpp")}\n// median test\n`);
+        const first = await build(ana, id);
+        const key = first.output.runKeys["solutions/main.cpp"]["samples/1"];
+        // two much slower measurements of the same run on the same hardware
+        await harness.app.sql`
+            insert into timing_samples (workspace_id, node_key, runner_pool, hardware_class, time_ms, memory_kb)
+            values (${ana.workspaceId}, ${key}, 'test', 'test-box', 5000, 1), (${ana.workspaceId}, ${key}, 'test', 'test-box', 6000, 1)`;
+        const second = await build(ana, id);
+        const cell = second.output.matrix["solutions/main.cpp"]["samples/1"];
+        expect(cell.timeMs).toBe(5000);
+        expect(cell.verdict).toBe("TLE");
+        expect(second.result).toBe("red");
+    });
+
+    it("warns when a checker's partial score is in a form kontestis ignores", async () => {
+        const id = await createProblem(ana, "bare-partial", "honi");
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "checker.py", `import sys
+text = sys.stdin.read()
+separator = text.split("\\n", 1)[0]
+_, test_input, expected, actual, _ = text.split(separator + "\\n")
+print("AC" if actual.split() == expected.split() else "custom:0.5")
+`);
+        await writeFile(ana, id, "problem.yaml", manifest.replace("type: batch", "type: batch\njudge: kontestis").replace("validator: validator.py", "validator: validator.py\nchecker: checker.py").replace("cluster3: WA", "cluster3: PA"));
+        const result = await build(ana, id);
+        const warnings = result.output.report.issues.filter((issue: any) => issue.code === "kontestis.incompatible").map((issue: any) => issue.message);
+        expect(warnings.some((message: string) => message.includes('without "partial:"'))).toBe(true);
+    });
+
+    it("refuses a testlib interactor instead of failing at run time", async () => {
+        const id = await createProblem(ana, "tl-interactor", "interactive");
+        await writeFile(ana, id, "interactor.cpp", `#include "testlib.h"\nint main(int argc, char* argv[]) { registerInteraction(argc, argv); quitf(_ok, "ok"); }\n`);
+        const manifest = await readFile(ana, id, "problem.yaml");
+        await writeFile(ana, id, "problem.yaml", manifest.replace("checker: interactor.py", "checker: interactor.cpp"));
+        const before = harness.runner.calls;
+        const result = await build(ana, id);
+        expect(result.result).toBe("red");
+        expect(result.output.report.issues.map((issue: any) => issue.code)).toContain("interactor.testlib");
+        // nothing was compiled or run for the solutions
+        expect(harness.runner.calls).toBeLessThanOrEqual(before + 1);
+    });
+});
+
 describe("working copy", () => {
     it("rejects an edit based on a stale version of the file", async () => {
         const id = await createProblem(ana, "stale");
@@ -601,6 +697,8 @@ describe("revisions and problem sets", () => {
         expect(problem.groups.find((group: any) => group.name === "full").tests).toContain("small/1");
         expect(text("A/tests/samples-001.in")).toBe("5 6\n1 5 3 3 2\n");
         expect(text("A/tests/samples-001.out").trim()).toBe("2");
+        // no checker in this problem, so the bundle names none
+        expect(problem.checker).toBeNull();
         // kontestis keeps a reference solution with every problem
         expect(problem.solution).toEqual({ path: "solution.cpp", language: "cpp" });
         expect(text("A/solution.cpp")).toBe(await readFile(ana, id, "solutions/main.cpp"));
@@ -696,6 +794,19 @@ describe("tenancy and roles", () => {
         expect(JSON.stringify(invocation.output)).not.toMatch(/[0-9a-f]{64}/);
         const statement = await bruno.get(`/problems/${problemId}/statement`);
         expect(statement.body.markdown).toContain("### Sample 1");
+        // nothing that shows the package: no source, no archives, no blobs, no previews
+        expect(statement.body.path).toBeUndefined();
+        expect(statement.body.source).toBeUndefined();
+        expect((await bruno.get(`/problems/${problemId}/archive`)).status).toBe(403);
+        expect((await bruno.get(`/builds/${authorBuild.id}/tests.zip`)).status).toBe(404);
+        expect((await bruno.get(`/builds/${invocation.id}/tests.zip`)).status).toBe(404);
+        expect((await bruno.get(`/problems/${problemId}/blobs/${authorBuild.output.tests[0].inputHash}`)).status).toBe(403);
+        expect((await bruno.post(`/problems/${problemId}/statement/preview`, { markdown: "{{N.max}}" })).status).toBe(403);
+        expect((await bruno.post(`/builds/${authorBuild.id}/cancel`)).status).toBe(404);
+        // a tester does get their own compiler output
+        const broken = await finished(harness, bruno, (await bruno.post(`/problems/${problemId}/invocations`, { name: "typo", language: "cpp", source: "int main() { return oops; }" })).body.id);
+        expect(broken.output.report.issues.map((issue: any) => issue.code)).toEqual(["solution.compile"]);
+        expect(broken.output.report.issues[0].message).toContain("oops");
     });
 
     it("records who did what", async () => {

@@ -179,15 +179,13 @@ test("opens an old revision read-only, with its own package download", async ({ 
     await expect(content).toHaveAttribute("contenteditable", "false");
 
     const archive = `/api/problems/${problemId}/archive?revision=${firstRevision}`;
-    const exists = (await page.request.get(archive)).status() !== 404;
     const request = page.waitForRequest((r) => r.url().includes("/archive"));
-    const download = exists ? page.waitForEvent("download") : undefined;
+    const download = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download package" }).click();
     expect(new URL((await request).url()).pathname + new URL((await request).url()).search).toBe(
         archive,
     );
-    if (download) expect((await download).suggestedFilename()).toMatch(/\.zip$/);
-    else test.info().annotations.push({ type: "skipped", description: "archive route is 404" });
+    expect((await download).suggestedFilename()).toMatch(/\.zip$/);
 });
 
 test("starts a thread from a line in the editor and reaches it from the Review tab", async ({

@@ -51,6 +51,10 @@ export const workspaceRoutes = (server: FastifyInstance, app: App) => {
             throw conflict("Members of this workspace are managed in its kontestis organisation");
         const [member] = await app.sql<{ id: string; name: string }[]>`select id, name from users where lower(email) = ${body.data.email.toLowerCase()}`;
         if (!member) throw notFound("No user with that email has signed in yet");
+        if (body.data.role !== "owner") {
+            const owners = await app.sql<{ user_id: string }[]>`select user_id from memberships where workspace_id = ${id} and role = 'owner'`;
+            if (owners.length === 1 && owners[0]!.user_id === member.id) throw conflict("A workspace needs at least one owner");
+        }
         await app.sql`
             insert into memberships (workspace_id, user_id, role) values (${id}, ${member.id}, ${body.data.role})
             on conflict (workspace_id, user_id) do update set role = excluded.role`;

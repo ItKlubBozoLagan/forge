@@ -3,6 +3,7 @@ import Fastify from "fastify";
 
 import { App } from "./app";
 import { HttpError } from "./http";
+import { currentUser } from "./http";
 import { authRoutes } from "./routes/auth";
 import { buildRoutes } from "./routes/builds";
 import { problemRoutes } from "./routes/problems";
@@ -30,15 +31,21 @@ export const createServer = async (app: App) => {
     await server.register(
         async (api) => {
             // `?runner=1` also asks the runner whether it is answering, which takes up to a few seconds
-            api.get("/health", async (req) => ({
-                ok: true,
-                runner: {
-                    kind: app.config.runner.kind,
-                    pool: app.runner.pool,
-                    hardwareClass: app.runner.hardwareClass,
-                    ...((req.query as { runner?: string }).runner ? { alive: await app.runner.alive() } : {}),
-                },
-            }));
+            // `?runner=1` also asks whether the runner is answering; it can put a probe on the
+            // runner's queue, so it needs a signed-in user
+            api.get("/health", async (req) => {
+                const probe = Boolean((req.query as { runner?: string }).runner);
+                if (probe) await currentUser(app, req);
+                return {
+                    ok: true,
+                    runner: {
+                        kind: app.config.runner.kind,
+                        pool: app.runner.pool,
+                        hardwareClass: app.runner.hardwareClass,
+                        ...(probe ? { alive: await app.runner.alive() } : {}),
+                    },
+                };
+            });
             authRoutes(api, app);
             workspaceRoutes(api, app);
             problemRoutes(api, app);

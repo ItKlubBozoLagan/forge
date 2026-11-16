@@ -70,7 +70,9 @@ author), *manage* (owner). Testers are blind: they cannot read files, builds or 
 `sync` applies all changes atomically. `base` is the hash the client last saw (`null` = did not
 exist); `hash: null` deletes. Contents must be uploaded with `POST /blobs` first.
 
-`GET /problems/:id/archive` (optional `?revision=`) returns the package as a zip.
+`GET /problems/:id/archive` (optional `?revision=`, read) returns the package as a zip.
+`outputHash` in a build's matrix is what the solution printed on that test (or the submitted
+file of an output-only solution), readable through the blob route below.
 `GET /problems/:id/blobs/:hash` serves content that belongs to the problem: files of its working
 copy and revisions, what its builds produced, and what was uploaded for it through
 `POST /problems/:id/blobs`. `sync` accepts the same set of hashes.
@@ -93,14 +95,15 @@ A build has `status`: `queued`, `running`, `done`, `failed`, and once done a `re
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/problems/:id/builds` | `{ revision?, remeasure? }` | `{ id }`; builds the working copy, or a revision (write) |
+| POST | `/problems/:id/builds` | `{ revision?, remeasure?, clean? }` | `{ id }`; builds the working copy, or a revision; `clean` ignores every cached step (write) |
 | GET | `/problems/:id/builds?kind=build\|invocation\|stress` | | `[BuildSummary]`, newest first |
 | GET | `/builds/:id` | | `BuildSummary & { params, name?, output }` |
 | GET | `/builds/:id/timing` | | `{ referenceClass, samples: { [solution]: { [testId]: [{ hardwareClass, count, min, median, max }] } } }` |
 | POST | `/problems/:id/invocations` | `{ name, language, source, revision? }` | `{ id }`; runs a solution that is not in the package (participate) |
 | POST | `/problems/:id/stress` | `{ generator, args, count, seedStart?, solution, group }` | `{ id }` (write); `args` must contain `{seed}` |
 | POST | `/builds/:id/promote` | `{ args }` | `{ version }`; adds a failing stress case to problem.yaml (write) |
-| GET | `/problems/:id/statement?lang=&revision=` | | `{ languages, language, markdown, unresolved, samplesBuilt, limits, groups }` (participate) |
+| GET | `/problems/:id/statement?lang=&revision=` | | `{ languages, language, markdown, unresolved, samplesBuilt, limits, groups }`, plus `path` and `source` (the file and its raw Markdown) for users who can read the package (participate) |
+| GET | `/problems/:id/statement/asset?path=&revision=` | | A non-Markdown file under `statement/` (figures), with an image content type; blind testers get the latest revision's (participate) |
 
 `BuildSummary`: `{ id, kind, revisionId, status, result, progress: { phase, done, total }, error, createdBy, createdAt, startedAt, finishedAt, name? }`.
 
@@ -119,8 +122,8 @@ A build has `status`: `queued`, `running`, `done`, `failed`, and once done a `re
     decisiveTests: testId[],
     issues: [{ severity: "error" | "warning", code, message, ref? }]
   },
-  tests: [{ id, group, index, source, inputHash?, inputSize?, answerHash?, error?, validation: { [group]: string | null } }],
-  matrix: { [solutionPath]: { [testId]: { verdict, score, timeMs, memoryKb, message? } } },
+  tests: [{ id, group, index, source, desc?, answerFile?, inputHash?, inputSize?, answerHash?, error?, validation: { [group]: string | null } }],
+  matrix: { [solutionPath]: { [testId]: { verdict, score, timeMs, memoryKb, message?, outputHash? } } },
   runKeys: { [solutionPath]: { [testId]: string } },
   groups: [{ name, points, aggregate, sample, depends, constraints, tests: testId[], closure: testId[] }],
   limits: { time_ms, memory_mb }, type, scoring, checker?, validator?, runner: { pool, hardwareClass }
@@ -134,12 +137,14 @@ validator's message. It is empty when the package has no validator.
 `Verdict` is one of `AC PA WA TLE MLE RE CE JE`. For an invocation, `report.solutions` holds the
 single ad-hoc solution. Blind testers get a redacted output for their own invocations:
 `{ report: { status, solutions, calibration: { timeLimitMs }, issues }, groups: [{ name, points, sample }], limits }`.
+Its `issues` hold only the tester's own compiler output (`solution.compile`) and judge failures
+(`run.*`).
 
 `output` of a `stress` run:
 
 ```ts
 { total, passed,
-  failures: [{ args, verdict, message?, inputHash, inputSize, timeMs }],
+  failures: [{ args, verdict, message?, inputHash, inputSize, timeMs, answerHash?, outputHash? }],
   invalid: [{ args, message }],   // generated tests the validator rejected
   errors: string[] }
 ```
@@ -148,11 +153,10 @@ More build routes:
 
 | Method | Path | Body | Result |
 |---|---|---|---|
-| POST | `/problems/:id/builds` | `{ revision?, remeasure?, clean? }` | `clean` ignores every cached step |
-| POST | `/builds/:id/cancel` | | Stops a queued or running build; it ends `failed` with `error: "Cancelled by <name>"` (409 once finished) |
-| GET | `/builds/:id/tests.zip` | | Inputs and answers as `<group>/<index>.in` / `.out` |
-| POST | `/problems/:id/statement/preview` | `{ markdown }` | `{ markdown, unresolved, samplesBuilt }` rendered against the working copy |
-| GET | `/health?runner=1` | | Adds `runner.alive`: whether the runner answered a probe |
+| POST | `/builds/:id/cancel` | | (write, or the build's creator) Stops a queued or running build; it ends `failed` with `error: "Cancelled by <name>"` (409 once finished) |
+| GET | `/builds/:id/tests.zip` | | (read) Inputs and answers as `<group>/<index>.in` / `.out` |
+| POST | `/problems/:id/statement/preview` | `{ markdown }` | (read) `{ markdown, unresolved, samplesBuilt }` rendered against the working copy |
+| GET | `/health?runner=1` | | (signed in) Adds `runner.alive`: results arrived recently, work is in flight, or a probe was answered |
 
 `POST /problems/:id/invocations` runs against the working copy unless `revision` is given
 (blind testers always run against the latest revision).

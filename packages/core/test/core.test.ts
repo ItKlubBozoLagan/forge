@@ -136,6 +136,14 @@ describe("manifest", () => {
         expect(built.tests[0]).toMatchObject({ answer: "tests/sample1.ans", desc: "from the statement" });
     });
 
+    it("warns when a tool's language cannot receive the constraint constants", () => {
+        const files = templateFiles("ioi", "demo", "Demo");
+        const manifest = parseManifest(files["problem.yaml"]!.replace("validator: validator.py", "validator: validator.java")).manifest!;
+        const { issues } = planBuild(manifest, [...Object.keys(files), "validator.java"]);
+        const warning = issues.find((issue) => issue.code === "prelude.unsupported");
+        expect(warning?.ref).toBe("validator.java");
+    });
+
     it("ships templates that plan without errors", () => {
         for (const format of TEMPLATE_FORMATS) {
             const files = templateFiles(format, "demo", "Demo");
@@ -245,6 +253,22 @@ describe("report", () => {
         const binary = plan(BASE.replace("name: demo", "name: demo\nscoring: { mode: binary }"), FILES).plan;
         const matrix: Matrix = { "main.cpp": { "small/1": result("AC"), "small/2": result("AC"), "full/1": result("AC") } };
         expect(buildReport(binary, matrix).solutions[0]).toMatchObject({ score: 1, maxScore: 1 });
+    });
+});
+
+describe("statement placeholders", () => {
+    const manifest = parseManifest(templateFiles("ioi", "demo", "Demo")["problem.yaml"]!).manifest!;
+    it("flags a sample that does not exist once the list of samples is complete", () => {
+        const one = [{ input: "1", output: "2" }];
+        expect(renderStatement("{{sample.1}} {{sample.2}}", manifest, {}, one, { strictSamples: true }).unresolved).toEqual(["sample.2"]);
+        expect(renderStatement("{{sample.1}}", manifest, {}, [], { strictSamples: true }).unresolved).toEqual(["sample.1"]);
+        // before a build there are no samples yet, which is not an error
+        expect(renderStatement("{{sample.1}}", manifest, {}, []).unresolved).toEqual([]);
+    });
+    it("leaves escaped braces alone", () => {
+        const rendered = renderStatement("$2^\\{{N}}$ and {{N.max}}", manifest, {}, []);
+        expect(rendered.unresolved).toEqual([]);
+        expect(rendered.markdown).toContain("$2^{{N}}$");
     });
 });
 

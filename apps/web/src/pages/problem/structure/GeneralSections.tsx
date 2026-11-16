@@ -10,6 +10,7 @@ import {
     setChecker,
     setConstraint,
     setGenerator,
+    setJudge,
     setLimits,
     setScoringMode,
     setTitle,
@@ -112,6 +113,27 @@ export const GeneralSection = ({ draft, apply, readOnly, programs }: SectionProp
                                     </option>
                                 );
                             })}
+                        </Select>
+                    )}
+                </Field>
+                <Field
+                    label="Target judge"
+                    hint="Only adds compatibility warnings to builds; it does not change how the package is built."
+                >
+                    {(id) => (
+                        <Select
+                            id={id}
+                            value={draft.judge === "kontestis" ? "kontestis" : ""}
+                            disabled={readOnly}
+                            onChange={(event) => {
+                                const value = event.target.value;
+                                apply((text) =>
+                                    setJudge(text, value === "kontestis" ? "kontestis" : undefined),
+                                );
+                            }}
+                        >
+                            <option value="">None</option>
+                            <option value="kontestis">kontestis</option>
                         </Select>
                     )}
                 </Field>

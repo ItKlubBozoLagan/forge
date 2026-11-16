@@ -35,10 +35,14 @@ export const renderStatement = (
     manifest: Manifest,
     groupConstraints: Record<string, Constraints>,
     samples: Sample[],
+    /** `strictSamples`: `samples` is the complete list, so `{{sample.N}}` beyond it is an error. */
+    options: { strictSamples?: boolean } = {},
 ): { markdown: string; unresolved: string[] } => {
     const unresolved: string[] = [];
     let sawSamples = false;
-    const rendered = markdown.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (whole, expression: string) => {
+    // `\{{` is a literal `{{`, for TeX such as `2^\{{N}}`
+    const rendered = markdown.replace(/(\\?)\{\{\s*([^}]+?)\s*\}\}/g, (whole: string, escaped: string, expression: string) => {
+        if (escaped) return whole.slice(1);
         const [path, filter] = expression.split("|").map((part) => part.trim());
         if (path === "samples") {
             sawSamples = true;
@@ -49,7 +53,7 @@ export const renderStatement = (
             sawSamples = true;
             const index = Number(single[1]) - 1;
             // samples only exist after a build; until then the placeholder renders as nothing
-            if (samples.length === 0) return "";
+            if (samples.length === 0 && !options.strictSamples) return "";
             const sample = samples[index];
             if (!sample) {
                 unresolved.push(expression);

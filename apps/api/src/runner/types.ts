@@ -22,6 +22,8 @@ export type RunRequest = {
     interactive?: boolean;
     timeLimitMs: number;
     memoryLimitMb: number;
+    /** Aborted when the build was cancelled: work not yet handed to the sandbox is dropped. */
+    signal?: AbortSignal;
 };
 
 /** Judges outputs that already exist (output-only tasks): nothing of the contestant's runs. */

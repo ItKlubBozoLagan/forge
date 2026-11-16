@@ -14,9 +14,16 @@ export class CountingRunner implements Runner {
     readonly pool = "test";
     readonly hardwareClass = "test-box";
     calls = 0;
+    /** While set, every run waits for it: lets a test act on a build that is certainly running. */
+    gate?: Promise<void>;
+    /** Resolves when the next run reaches the gate. */
+    onRun?: () => void;
     private inner = new LocalRunner();
-    run(request: RunRequest) {
+    async run(request: RunRequest) {
         this.calls += 1;
+        this.onRun?.();
+        await this.gate;
+        if (request.signal?.aborted) throw new Error("The build was cancelled");
         return this.inner.run(request);
     }
     check(request: CheckRequest) {
@@ -69,6 +76,8 @@ export type Client = {
     delete(path: string): Promise<{ status: number; body: any }>;
     workspaceId: string;
     userId: string;
+    /** Cookie and CSRF headers, for requests that need the raw response. */
+    headers: Record<string, string>;
 };
 
 const parse = (payload: string) => {
@@ -102,6 +111,7 @@ export const login = async (harness: Harness, name: string): Promise<Client> => 
         delete: (path) => send("DELETE", path),
         workspaceId: "",
         userId: "",
+        headers,
     };
     const me = await client.get("/me");
     client.workspaceId = me.body.workspaces[0].id;

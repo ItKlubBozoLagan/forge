@@ -22,7 +22,7 @@ import {
 import { BlobStore, keyOf, sha256, Tree } from "../blobs";
 import { Sql } from "../db";
 import { Scheduler } from "../runner/scheduler";
-import { withTestlib } from "./testlib";
+import { usesTestlib, withTestlib } from "./testlib";
 import { CheckRequest, Program, Runner, RunRequest, RunResult } from "../runner/types";
 
 export type Progress = { phase: string; done: number; total: number };
@@ -118,7 +118,7 @@ export class Engine {
         return this.ctx.scheduler.submit(this.ctx.workspaceId, () => {
             // a cancelled build stops asking for work; jobs already on the runner finish on their own
             if (this.ctx.signal?.aborted) throw new Cancelled();
-            return this.ctx.runner.run(request);
+            return this.ctx.runner.run({ ...request, signal: this.ctx.signal });
         });
     }
 
@@ -155,7 +155,7 @@ export class Engine {
         group: string | undefined,
         items: Array<{ id: string; args: string }>,
     ): Promise<Map<string, Generated>> {
-        const source = withTestlib(withPrelude(generator.source, generator.language, constraints, group), generator.language, "generator");
+        const source = withPrelude(withTestlib(generator.source, generator.language, "generator"), generator.language, constraints, group);
         const sourceHash = sha256(source);
         const keyOfItem = (args: string) => keyOf("gen", sourceHash, generator.language, args);
         const known = await this.cached<Generated>(items.map((item) => keyOfItem(item.args)));
@@ -206,7 +206,7 @@ export class Engine {
         group: string,
         inputs: Array<{ id: string; inputHash: string }>,
     ): Promise<Map<string, string | null>> {
-        const source = withTestlib(withPrelude(validator.source, validator.language, constraints, group), validator.language, "validator");
+        const source = withPrelude(withTestlib(validator.source, validator.language, "validator"), validator.language, constraints, group);
         const sourceHash = sha256(source);
         const keyOfInput = (hash: string) => keyOf("val", sourceHash, validator.language, hash);
         const known = await this.cached<{ message: string | null }>(inputs.map((input) => keyOfInput(input.inputHash)));
@@ -469,7 +469,8 @@ export class Engine {
         const program = await this.program(plan.checker.path);
         return {
             language: program.language,
-            source: withTestlib(withPrelude(program.source, program.language, plan.manifest.constraints), program.language, "checker"),
+            // testlib first, so its #line and the prelude's keep diagnostics on the author's lines
+            source: withPrelude(withTestlib(program.source, program.language, "checker"), program.language, plan.manifest.constraints),
         };
     }
 
@@ -637,7 +638,7 @@ export class Engine {
             // as many (empty) samples as the package has, so {{sample.9}} of three is caught
             const sampleGroups = new Set(plan.groups.filter((group) => group.sample).map((group) => group.name));
             const placeholders = plan.tests.filter((test) => sampleGroups.has(test.group)).map(() => ({ input: "", output: "" }));
-            const { unresolved } = renderStatement(await this.read(path), plan.manifest, groupConstraints, placeholders);
+            const { unresolved } = renderStatement(await this.read(path), plan.manifest, groupConstraints, placeholders, { strictSamples: true });
             if (unresolved.length > 0)
                 error(
                     "statement.unresolved",
@@ -648,6 +649,17 @@ export class Engine {
 
         // 3. answers
         const withInput = tests.filter((test) => test.inputHash);
+        if (plan.manifest.type === "interactive" && plan.checker) {
+            const interactor = await this.program(plan.checker.path);
+            if (usesTestlib(interactor.source, interactor.language)) {
+                error(
+                    "interactor.testlib",
+                    "testlib interactors are not supported: the evaluator sends the test and the solution's output on one stream. Rewrite the interactor to Forge's protocol (see the package format docs)",
+                    plan.checker.path,
+                );
+                return { ...broken(), tests, groups: plan.groups };
+            }
+        }
         const checker = await this.checker(plan);
         if (checker) {
             const compileError = await this.compiles(checker);
@@ -701,6 +713,8 @@ export class Engine {
             : plan;
         const matrix: Matrix = {};
         const runKeys: BuildOutput["runKeys"] = {};
+        /** Tests on which the checker gave a partial score kontestis would not recognise. */
+        const barePartial = new Set<string>();
         let finished = 0;
         progress("solutions", 0, solutions.length);
         await Promise.all(
@@ -730,6 +744,7 @@ export class Engine {
                 for (const test of runnable) {
                     const run = raw.get(test.id);
                     if (!run) continue;
+                    if (run.status === "custom" && !(run.data ?? "").trim().startsWith("partial:")) barePartial.add(test.id);
                     row[test.id] = judge(run, limits.time_ms);
                     if (run.key) keys[test.id] = run.key;
                 }
@@ -744,6 +759,14 @@ export class Engine {
                 progress("solutions", ++finished, solutions.length);
             }),
         );
+
+        if (plan.manifest.judge === "kontestis" && barePartial.size > 0)
+            issues.push({
+                severity: "warning",
+                code: "kontestis.incompatible",
+                message: `kontestis: the checker printed a partial score without "partial:" (for example on ${[...barePartial][0]}); kontestis only awards credit for custom:partial:<fraction> and scores anything else 0`,
+                ref: plan.checker?.path,
+            });
 
         return {
             report: buildReport(effectivePlan, matrix, issues),

@@ -125,7 +125,13 @@ const runChecker = async (checker: { command: string; args: string[] }, stdin: s
     return verdictOf(checked.stdout.trim());
 };
 
-const tokens = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
+/** The evaluator's default comparison, reproduced exactly: every line trimmed, lines joined. */
+const tokens = (text: string) =>
+    text
+        .split("\n")
+        .map((line) => line.trim())
+        .join(" ")
+        .trim();
 
 /**
  * Runs programs directly on this machine with no sandbox. It exists so the system can be

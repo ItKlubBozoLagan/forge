@@ -28,7 +28,8 @@ constraints:                    # the single source of truth for every bound
   A: { min: 1, max: 1000000000 }
 
 validator: validator.py
-checker: checker.py             # omit to compare tokens; the interactor for interactive tasks
+checker: checker.py             # omit for the judge's default comparison; the interactor for interactive tasks
+judge: kontestis                # optional: warn about what this judge cannot score
 generators:
   rand: generators/rand.py
 
@@ -59,7 +60,7 @@ solutions:
 
 | `type` | What is judged | kontestis `evaluation_variant` |
 |---|---|---|
-| `batch` | A program reads the test on stdin and prints an answer; compared by tokens, or by `checker` | `plain`, `checker` |
+| `batch` | A program reads the test on stdin and prints an answer; compared by the judge's default comparison, or by `checker` | `plain`, `checker` |
 | `interactive` | A program talks to the interactor named in `checker` | `interactive` |
 | `output-only` | Output files the contestant submits; no program of theirs runs | `output-only` |
 | `communication`, `grader` | Can be described but not built: the evaluator runs one single-file program per submission | none |
@@ -115,7 +116,7 @@ solution's outputs. Statements are Markdown with KaTeX math.
 
 | `checker` | Meaning |
 |---|---|
-| omitted | The judge's default comparison: outputs match line by line, ignoring leading and trailing whitespace of each line |
+| omitted | The judge's default comparison: every line is trimmed and the lines are joined by a space, then the two texts must be equal. Line breaks and surrounding spaces do not matter; a blank line in the middle or two spaces inside a line do |
 | `{ builtin: lines }` | Lines must match, ignoring trailing spaces and trailing blank lines |
 | `{ builtin: float, eps: 1e-6 }` | Tokens match; numbers may differ by an absolute or relative error of at most `eps` |
 | `{ builtin: yesno }` | Tokens match without regard to letter case |
@@ -158,7 +159,8 @@ answers can be downloaded as a zip from the build page.
 to skip the `2 \cdot 10^5` formatting), `{{group.small.N.max}}`, `{{limits.time}}` and
 `{{limits.memory}}` are filled from `problem.yaml`; `{{samples}}` places every sample test and
 `{{sample.2}}` a single one, so an explanation can follow each. A placeholder that cannot be
-filled makes the build red. Images are files of the package referenced relative to the
+filled makes the build red, as does `{{sample.3}}` when the package has fewer samples; write
+`\{{` for a literal `{{` in TeX. Images are files of the package referenced relative to the
 statement (`![](figure.png)` for `statement/figure.png`) and are exported with it. The
 Statement tab edits a statement with a live preview and prints it.
 

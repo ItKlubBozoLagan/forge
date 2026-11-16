@@ -378,3 +378,19 @@ test("imports a Polygon package and builds it with its testlib tools", async ({ 
     await expect(page.getByTestId("cell-solutions/sol.py-tests/1")).toContainText("AC");
     await expect(page.getByTestId("cell-solutions/wrong.py-tests/1")).toContainText("WA");
 });
+
+test("shows a figure from the package in the statement", async ({ page }) => {
+    await signIn(page, "Ana");
+    const id = await createProblem(page, "With Figure");
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="teal"/></svg>';
+    const headers = { "X-Forge-Csrf": "1", "content-type": "application/octet-stream" };
+    expect((await page.request.put(`/api/problems/${id}/file?path=statement/figure.svg`, { headers, data: Buffer.from(svg) })).ok()).toBe(true);
+    const statement = await readFile(page, id, "statement/en.md");
+    expect((await page.request.put(`/api/problems/${id}/file?path=statement/en.md`, { headers, data: Buffer.from(`${statement}\n![The figure](figure.svg)\n`) })).ok()).toBe(true);
+
+    await page.goto(`/p/${id}/statement`);
+    const figure = page.getByRole("img", { name: "The figure" });
+    await expect(figure).toBeVisible();
+    // the browser decoded it: an image served with the wrong type has no size
+    await expect.poll(() => figure.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(40);
+});

@@ -1,5 +1,5 @@
 import { TEMPLATE_FORMATS, templateFiles } from "@forge/core";
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyReply } from "fastify";
 import { unzipSync, zipSync } from "fflate";
 import { z } from "zod";
 
@@ -54,6 +54,19 @@ export const resolveTree = async (app: App, problem: ProblemRow, revision: unkno
     return { tree: row.tree, revisionId: row.id };
 };
 
+const POLYGON_MAX_ARCHIVE = 128 * 1024 * 1024;
+const POLYGON_MAX_UNPACKED = 512 * 1024 * 1024;
+
+/** Content types the browser needs to show a package file inline; everything else downloads. */
+const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml" };
+export const sendFile = (reply: FastifyReply, path: string, data: Buffer, hash: string) => {
+    const type = IMAGE_TYPES[path.split(".").pop()?.toLowerCase() ?? ""];
+    reply.header("etag", hash).header("x-content-type-options", "nosniff");
+    // an SVG is a document: sandboxed, it cannot run scripts against the app's origin
+    if (type === "image/svg+xml") reply.header("content-security-policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'");
+    return reply.header("content-type", type ?? "application/octet-stream").send(data);
+};
+
 /**
  * Blobs are stored per workspace, but access to a problem only covers its own content: files
  * of its working copy and revisions, what its builds produced, and what was uploaded for it.
@@ -62,11 +75,15 @@ export const blobBelongs = async (app: App, problem: ProblemRow, hash: string): 
     if (!/^[0-9a-f]{64}$/.test(hash)) return false;
     if (Object.values(problem.draft_tree).some((entry) => entry.hash === hash)) return true;
     const pattern = `%${hash}%`;
+    const known = await app.sql`select 1 from problem_uploads where problem_id = ${problem.id} and hash = ${hash}`;
+    if (known.length > 0) return true;
+    // searching revisions and build reports is slow, so a hit is remembered
     const found = await app.sql`
-        select 1 where exists (select 1 from problem_uploads where problem_id = ${problem.id} and hash = ${hash})
-            or exists (select 1 from revisions where problem_id = ${problem.id} and tree::text like ${pattern})
+        select 1 where exists (select 1 from revisions where problem_id = ${problem.id} and tree::text like ${pattern})
             or exists (select 1 from builds where problem_id = ${problem.id} and (report::text like ${pattern} or tree::text like ${pattern}))`;
-    return found.length > 0;
+    if (found.length === 0) return false;
+    await app.sql`insert into problem_uploads (problem_id, hash) values (${problem.id}, ${hash}) on conflict do nothing`;
+    return true;
 };
 
 export const problemRoutes = (server: FastifyInstance, app: App) => {
@@ -113,14 +130,27 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
     });
 
     /** Creates a problem from a Polygon package: the zip Polygon offers for download. */
-    server.post("/workspaces/:id/import/polygon", { bodyLimit: 256 * 1024 * 1024 }, async (req) => {
+    server.post("/workspaces/:id/import/polygon", { bodyLimit: POLYGON_MAX_ARCHIVE }, async (req) => {
         const user = await currentUser(app, req);
         const { id } = req.params as { id: string };
         await requireWorkspace(app, user.id, id);
         if (!Buffer.isBuffer(req.body)) throw badRequest("Send the Polygon package as application/octet-stream");
         let imported;
         try {
-            imported = importPolygon(unzipSync(new Uint8Array(req.body)));
+            // Only what the importer reads is unpacked, and never more than a fixed amount: an
+            // archive is small on the wire and can be huge once inflated.
+            let total = 0;
+            const wanted = /(^|\/)(problem\.xml|files\/[^/]+|solutions\/[^/]+|tests\/[^/]+|statements\/[^/]+\/problem-properties\.json)$/;
+            const unpacked = unzipSync(new Uint8Array(req.body), {
+                filter: (entry) => {
+                    if (!wanted.test(entry.name) || /\.(exe|jar|class|o|a|pdf)$/i.test(entry.name)) return false;
+                    if (entry.originalSize > app.config.maxFileBytes) return false;
+                    total += entry.originalSize;
+                    if (total > POLYGON_MAX_UNPACKED) throw new Error("the package unpacks to more than 512 MB");
+                    return true;
+                },
+            });
+            imported = importPolygon(unpacked);
         } catch (error) {
             throw badRequest(`The package could not be imported: ${(error as Error).message}`);
         }
@@ -236,7 +266,7 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         if (!entry) throw notFound("File not found");
         const data = await app.blobs.get(problem.workspace_id, entry.hash);
         if (!data) throw notFound("File not found");
-        return reply.header("content-type", "application/octet-stream").header("etag", entry.hash).send(data);
+        return sendFile(reply, pathOf(req.query), data, entry.hash);
     });
 
     /** The package as a zip: the working copy, or a revision. */

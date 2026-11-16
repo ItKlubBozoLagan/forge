@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Download, Gauge, RotateCcw, Square, XCircle } from "lucide-react";
+import { CheckCircle2, Download, Gauge, RotateCcw, XCircle } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -8,7 +8,7 @@ import { api } from "../../../lib/api";
 import { downloadFrom } from "../../../lib/files";
 import { formatDate, formatDuration, plural } from "../../../lib/format";
 import { useTicker } from "../../../lib/hooks";
-import { can, isActive, keys, useBuild, useMe } from "../../../lib/queries";
+import { can, isActive, keys, useBuild } from "../../../lib/queries";
 import type { BuildOutput, Health, Problem, Revision } from "../../../lib/types";
 import { BuildBadge } from "../../../ui/Badge";
 import { Button } from "../../../ui/Button";
@@ -16,6 +16,7 @@ import { cx } from "../../../ui/cx";
 import { Card, ErrorNotice, Loading, Notice, Progress } from "../../../ui/misc";
 import { useToast } from "../../../ui/Toast";
 import { CalibrationCard } from "./Calibration";
+import { CancelButton, CancelledNotice, isCancelled } from "./Cancel";
 import { KillCard } from "./Kills";
 import { Matrix } from "./Matrix";
 import { TestDialog } from "./TestDialog";
@@ -71,12 +72,10 @@ export const BuildDetail = ({
     const build = useBuild<BuildOutput>(buildId);
     const [openTest, setOpenTest] = useState<string>();
     const [starting, setStarting] = useState<"remeasure" | "clean">();
-    const [cancelling, setCancelling] = useState(false);
     const [downloading, setDownloading] = useState(false);
     const queryClient = useQueryClient();
     const navigate = useNavigate();
     const toast = useToast();
-    const me = useMe();
     const active = isActive(build.data?.status);
     useTicker(active);
     // while the build waits, check that some runner is answering on its queue
@@ -96,8 +95,6 @@ export const BuildDetail = ({
     const errors = report?.issues.filter((issue) => issue.severity === "error").length ?? 0;
     const warnings = report?.issues.filter((issue) => issue.severity === "warning").length ?? 0;
     const writable = can(problem.role, "write");
-    const cancelled = data.status === "failed" && !!data.error?.startsWith("Cancelled by");
-    const mayCancel = writable || (!!me.data && me.data.user.id === data.createdBy);
 
     const start = async (mode: "remeasure" | "clean") => {
         setStarting(mode);
@@ -112,21 +109,6 @@ export const BuildDetail = ({
             toast.error(error);
         } finally {
             setStarting(undefined);
-        }
-    };
-
-    const cancel = async () => {
-        setCancelling(true);
-        try {
-            await api.post(`/builds/${data.id}/cancel`);
-            await Promise.all([
-                queryClient.invalidateQueries({ queryKey: keys.build(data.id) }),
-                queryClient.invalidateQueries({ queryKey: keys.builds(problem.id, "build") }),
-            ]);
-        } catch (error) {
-            toast.error(error);
-        } finally {
-            setCancelling(false);
         }
     };
 
@@ -192,18 +174,7 @@ export const BuildDetail = ({
                             </Button>
                         </>
                     )}
-                    {active && mayCancel && (
-                        <Button
-                            size="sm"
-                            variant="danger"
-                            icon={<Square className="size-3.5" />}
-                            pending={cancelling}
-                            onClick={cancel}
-                            title="Stop this build: runs already handed to the runner finish, nothing new starts"
-                        >
-                            Cancel
-                        </Button>
-                    )}
+                    <CancelButton problem={problem} run={data} />
                 </div>
             </div>
 
@@ -239,11 +210,8 @@ export const BuildDetail = ({
                 </div>
             )}
 
-            {cancelled ? (
-                <Notice>
-                    <span data-testid="build-cancelled">{data.error}.</span> Start a new build when
-                    you are ready.
-                </Notice>
+            {isCancelled(data) ? (
+                <CancelledNotice run={data} next="Start a new build when you are ready." />
             ) : (
                 data.status === "failed" && (
                     <ErrorNotice error={new Error(data.error ?? "The build failed unexpectedly")} />

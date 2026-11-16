@@ -18,6 +18,7 @@ import { Field, Input, Select } from "../../ui/Field";
 import { Card, ErrorNotice, Loading, Notice, Progress } from "../../ui/misc";
 import { Table, TableWrap, Td, Th, Tr } from "../../ui/Table";
 import { useToast } from "../../ui/Toast";
+import { CancelButton, CancelledNotice, isCancelled } from "./build/Cancel";
 import { Matrix } from "./build/Matrix";
 import { TestDialog } from "./build/TestDialog";
 import { useProblemContext } from "./ProblemLayout";
@@ -185,6 +186,9 @@ const InvocationResult = ({ runId }: { runId: string }) => {
                 <span className="text-xs text-muted">
                     {formatDate(data.createdAt)} · {formatDuration(data.startedAt, data.finishedAt)}
                 </span>
+                <div className="ml-auto">
+                    <CancelButton problem={problem} run={data} />
+                </div>
             </div>
             {isActive(data.status) && (
                 <div className="rounded-lg border border-line bg-surface p-3">
@@ -207,8 +211,12 @@ const InvocationResult = ({ runId }: { runId: string }) => {
                     />
                 </div>
             )}
-            {data.status === "failed" && (
-                <ErrorNotice error={new Error(data.error ?? "The run failed")} />
+            {isCancelled(data) ? (
+                <CancelledNotice run={data} next="Start a new run when you are ready." />
+            ) : (
+                data.status === "failed" && (
+                    <ErrorNotice error={new Error(data.error ?? "The run failed")} />
+                )
             )}
             {output && output.report.issues.length > 0 && (
                 <IssueList issues={output.report.issues} />

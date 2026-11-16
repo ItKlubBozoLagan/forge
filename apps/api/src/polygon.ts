@@ -68,7 +68,7 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
         prefix = found.slice(0, found.length - "problem.xml".length);
     }
     const file = (path: string): Uint8Array | undefined => archive[`${prefix}${path}`];
-    const xml = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "" }).parse(text(file("problem.xml")!)) as { problem?: Record<string, any> };
+    const xml = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "", processEntities: false }).parse(text(file("problem.xml")!)) as { problem?: Record<string, any> };
     const problem = xml.problem;
     if (!problem) throw new Error("problem.xml has no <problem> element");
 
@@ -105,7 +105,7 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
             notes.push(`${what} ${source} is in a language Forge does not run; it was not imported.`);
             return undefined;
         }
-        const path = `${target}.${source.split(".").pop()}`;
+        const path = `${target}.${source.split(".").pop()}`.replace(/[^A-Za-z0-9._/-]/g, "_");
         files[path] = data;
         return path;
     };
@@ -141,11 +141,11 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
     // tests and groups
     const declared = new Map(asArray<Record<string, any>>(testset.groups?.group).map((group) => [String(group.name), group]));
     const inputPattern = String(testset["input-path-pattern"] ?? "tests/%02d");
-    type Bucket = { name: string; sample: boolean; points: number; tests: Array<Record<string, unknown>> };
+    type Bucket = { name: string; sample: boolean; points: number; samples: number; tests: Array<Record<string, unknown>> };
     const buckets = new Map<string, Bucket>();
     const bucket = (key: string, sample: boolean) => {
         let found = buckets.get(key);
-        if (!found) buckets.set(key, (found = { name: key, sample, points: 0, tests: [] }));
+        if (!found) buckets.set(key, (found = { name: key, sample, points: 0, samples: 0, tests: [] }));
         return found;
     };
     const tests = asArray<Record<string, string>>(testset.tests?.test);
@@ -155,6 +155,7 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
         const sample = test.sample === "true";
         const target = grouped ? bucket(groupName(String(test.group ?? "ungrouped")), false) : bucket(sample ? "samples" : "tests", sample);
         if (test.points !== undefined) target.points += Number(test.points) || 0;
+        if (sample) target.samples += 1;
         const [command, ...args] = String(test.cmd ?? "").trim().split(/\s+/);
         const generator = test.method === "generated" && command ? generatorFor(command) : undefined;
         if (generator) {
@@ -182,14 +183,27 @@ export const importPolygon = (archive: Record<string, Uint8Array>): PolygonImpor
     const anyPoints = [...buckets.values()].some((entry) => pointsOf(entry) > 0);
     if (!anyPoints) manifest.scoring = { mode: "binary" };
     if (Object.keys(generators).length > 0) manifest.generators = generators;
+    // in a grouped package the samples are whichever group holds only sample tests
+    for (const entry of buckets.values()) {
+        if (!grouped || entry.samples === 0) continue;
+        if (entry.samples === entry.tests.length) entry.sample = true;
+        else notes.push(`Group "${entry.name}" mixes sample tests with others; Forge shows samples per group, so move them to a group with sample: true to have them in the statement.`);
+    }
+    const resources = asArray<Record<string, string>>(problem.files?.resources?.file)
+        .map((resource) => String(resource.path ?? ""))
+        .filter((path) => path && !/(^|\/)(testlib\.h|olymp\.sty|problem\.tex|statements\.ftl|tutorial\.tex)$/.test(path));
+    if (resources.length > 0)
+        notes.push(`Resource files are not imported (${resources.slice(0, 5).join(", ")}${resources.length > 5 ? ", ..." : ""}); a tool that includes one of them must be made self-contained.`);
     manifest.groups = [...buckets.values()].map((entry) => {
         const group = declared.get(entry.name);
+        // points given per test add up; Polygon's group policy decides otherwise
+        const perTest = group ? group["points-policy"] === "each-test" : entry.points > 0;
         const depends = asArray<Record<string, string>>(group?.dependencies?.dependency).map((dependency) => groupName(String(dependency.group)));
         return {
             name: entry.name,
             ...(entry.sample ? { sample: true } : {}),
             ...(anyPoints ? { points: pointsOf(entry) } : {}),
-            ...(group?.["points-policy"] === "each-test" ? { aggregate: "sum" } : {}),
+            ...(perTest && anyPoints && !entry.sample ? { aggregate: "sum" } : {}),
             ...(!grouped && !entry.sample && buckets.has("samples") ? { depends: ["samples"] } : {}),
             ...(depends.length > 0 ? { depends: depends.filter((dependency) => buckets.has(dependency)) } : {}),
             tests: entry.tests,

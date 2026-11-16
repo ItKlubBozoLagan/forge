@@ -103,5 +103,7 @@ export const withTestlib = (source: string, language: Language, role: ToolRole):
     ]
         .filter(Boolean)
         .join("\n");
-    return `${source.slice(0, match.index)}${before}${source.slice(match.index + match[0].length)}`;
+    // a second include of the header would not be found by the compiler; the first one covers it
+    const rest = source.slice(match.index + match[0].length).replace(new RegExp(INCLUDE.source, "gm"), "");
+    return `${source.slice(0, match.index)}${before}${rest}`;
 };

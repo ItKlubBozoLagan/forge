@@ -50,6 +50,24 @@ pnpm dev        # API on :8090, web on http://localhost:3200
 
 Sign in with the development login, create a problem from a template and press **Build**.
 
+To run without the kontestis stack, `docker compose up -d` starts Postgres, Redis, MinIO and an
+evaluator of Forge's own on other ports. Put these in `.env`:
+
+```sh
+DATABASE_URL=postgresql://forge:forge@localhost:5433/forge
+REDIS_URL=redis://localhost:6380
+S3_PORT=9002
+```
+
+and give the tests the same infrastructure (after creating the databases `forge_test` and
+`forge_e2e` in it):
+
+```sh
+export REDIS_URL=redis://localhost:6380 S3_PORT=9002
+export TEST_DATABASE_URL=postgresql://forge:forge@localhost:5433/forge_test
+export E2E_DATABASE_URL=postgresql://forge:forge@localhost:5433/forge_e2e
+```
+
 To run on the same evaluator instances a judge uses, set `EVALUATOR_QUEUE_KEY` to the judge's
 queue (`evaluator_msg_queue` for kontestis) and `RUNNER_HARDWARE_CLASS` to a name for that
 hardware.

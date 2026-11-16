@@ -18,6 +18,7 @@ import { Card, EmptyState, ErrorNotice, Loading, Notice, Progress } from "../../
 import { Table, TableWrap, Td, Th, Tr } from "../../ui/Table";
 import { useToast } from "../../ui/Toast";
 import { BlobPreview } from "./build/BlobPreview";
+import { CancelButton, CancelledNotice, isCancelled } from "./build/Cancel";
 import { useProblemContext } from "./ProblemLayout";
 
 /** Generators, groups and solutions from the working copy's problem.yaml, parsed in the browser. */
@@ -284,6 +285,9 @@ const StressResult = ({ runId }: { runId: string }) => {
                 <span className="text-xs text-muted">
                     {formatDate(data.createdAt)} · {formatDuration(data.startedAt, data.finishedAt)}
                 </span>
+                <div className="ml-auto">
+                    <CancelButton problem={problem} run={data} />
+                </div>
             </div>
             {params && (
                 <dl className="flex flex-wrap gap-x-5 gap-y-1 text-[13px]">
@@ -329,8 +333,12 @@ const StressResult = ({ runId }: { runId: string }) => {
                     />
                 </div>
             )}
-            {data.status === "failed" && (
-                <ErrorNotice error={new Error(data.error ?? "The stress run failed")} />
+            {isCancelled(data) ? (
+                <CancelledNotice run={data} next="Start a new run when you are ready." />
+            ) : (
+                data.status === "failed" && (
+                    <ErrorNotice error={new Error(data.error ?? "The stress run failed")} />
+                )
             )}
             {output && (
                 <>

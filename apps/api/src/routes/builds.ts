@@ -9,7 +9,7 @@ import { Tree } from "../blobs";
 import { BuildOutput, Engine } from "../engine/engine";
 import { StressOutput } from "../engine/stress";
 import { audit, badRequest, can, conflict, currentUser, forbidden, notFound, ProblemRow, requireProblem } from "../http";
-import { resolveTree, updateDraft } from "./problems";
+import { resolveTree, sendFile, updateDraft } from "./problems";
 
 type BuildRecord = {
     id: string;
@@ -52,7 +52,8 @@ const redact = (output: BuildOutput | null) =>
             calibration: { timeLimitMs: output.report.calibration.timeLimitMs },
             kills: [],
             decisiveTests: [],
-            issues: output.report.issues.filter((issue) => issue.code.startsWith("run.")),
+            // their own compiler output and judge failures; nothing about the package
+            issues: output.report.issues.filter((issue) => issue.code.startsWith("run.") || issue.code === "solution.compile"),
         },
         groups: output.groups.map((group) => ({ name: group.name, points: group.points, sample: group.sample })),
         limits: output.limits,
@@ -282,6 +283,28 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
         }
         return { samples, built };
     };
+
+    /**
+     * A figure or other file a statement links to. Everyone who may read the statement may
+     * fetch these, including blind testers, who see the latest revision's.
+     */
+    server.get("/problems/:id/statement/asset", async (req, reply) => {
+        const user = await currentUser(app, req);
+        const { problem, role } = await requireProblem(app, user.id, (req.params as { id: string }).id, "participate");
+        const query = req.query as { path?: string; revision?: string };
+        const path = String(query.path ?? "");
+        if (!path.startsWith("statement/") || path.endsWith(".md") || path.split("/").includes("..")) throw notFound("File not found");
+        let tree: Tree;
+        if (!can(role, "read")) {
+            const head = await headRevision(app, problem.id);
+            if (!head) throw notFound("File not found");
+            tree = head.tree;
+        } else tree = (await resolveTree(app, problem, query.revision)).tree;
+        const entry = tree[path];
+        const data = entry && (await app.blobs.get(problem.workspace_id, entry.hash));
+        if (!entry || !data) throw notFound("File not found");
+        return sendFile(reply, path, data, entry.hash);
+    });
 
     /** Renders statement text that is not saved yet, against the working copy's problem.yaml. */
     server.post("/problems/:id/statement/preview", async (req) => {

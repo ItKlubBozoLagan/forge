@@ -33,6 +33,9 @@ export type Calibration = {
 export type BuildOutput = {
     report: { status: "green" | "red"; solutions: SolutionReport[]; calibration: Calibration; issues: Issue[] };
     limits?: { time_ms: number; memory_mb: number };
+    type?: string;
+    checker?: string | null;
+    validator?: string | null;
 };
 export type StressOutput = {
     total: number;
@@ -51,9 +54,26 @@ export type BuildSummary = {
 };
 export type BuildDetail<T = unknown> = BuildSummary & { output: T | null };
 
-/** Polls until the build is done or failed, with a single-line progress indicator on a TTY. */
+/** One line naming what judges the package: task type, checker and validator. */
+export const describeTools = (output: Pick<BuildOutput, "type" | "checker" | "validator">): string =>
+    `Judging: ${output.type ?? "batch"} task, checker ${output.checker ?? "default comparison"}, validator ${output.validator ?? "none"}`;
+
+/** Polls until the build is done or failed, with a single-line progress indicator on a TTY. Ctrl-C cancels the build. */
 export const waitForBuild = async <T>(client: Client, buildId: string): Promise<BuildDetail<T>> => {
     const tty = Boolean(process.stdout.isTTY);
+    let cancelling = false;
+    const onSigint = () => {
+        if (cancelling) return;
+        cancelling = true;
+        void client
+            .post(`/builds/${buildId}/cancel`)
+            .catch(() => undefined)
+            .finally(() => {
+                info("cancelled");
+                process.exit(130);
+            });
+    };
+    process.on("SIGINT", onSigint);
     let lastLength = 0;
     const clear = () => {
         if (tty && lastLength > 0) process.stdout.write(`\r${" ".repeat(lastLength)}\r`);
@@ -72,6 +92,7 @@ export const waitForBuild = async <T>(client: Client, buildId: string): Promise<
             await sleep(1000);
         }
     } finally {
+        process.off("SIGINT", onSigint);
         clear();
     }
 };
@@ -141,6 +162,7 @@ export const printBuild = (build: BuildDetail<BuildOutput>): number => {
     }
     const { report } = build.output;
     info(`Result: ${report.status === "green" ? green("GREEN") : red("RED")}`);
+    info(describeTools(build.output));
     printIssues(report.issues);
     info();
     printSolutionMatrix(report.solutions);

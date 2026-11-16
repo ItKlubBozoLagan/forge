@@ -43,7 +43,9 @@ export class EvaluatorRunner implements Runner {
     private resultQueue = `forge_results:${randomUUID()}`;
     private pending = new Map<string, (result: EvaluatorResult | undefined) => void>();
     private closed = false;
-    private lastAlive?: { ok: boolean; at: number };
+    private lastResultAt = 0;
+    private inFlight = 0;
+    private probing?: Promise<boolean>;
     private idFormat?: Promise<"number" | "string">;
 
     constructor(private config: Config) {
@@ -67,6 +69,7 @@ export class EvaluatorRunner implements Runner {
                 const item = await this.listener.blPop(this.resultQueue, 2);
                 if (!item) continue;
                 const result = JSON.parse(item.element) as EvaluatorResult;
+                this.lastResultAt = Date.now();
                 const resolve = this.pending.get(String(result.evaluation_id));
                 if (resolve) {
                     this.pending.delete(String(result.evaluation_id));
@@ -111,10 +114,21 @@ export class EvaluatorRunner implements Runner {
         return this.interpret(await this.send(id, message, timeout), inputs, request.checking === "capture");
     }
 
-    /** Whether an evaluator is consuming the queue and answering, within a few seconds. */
+    /**
+     * Whether an evaluator is consuming the queue. A busy evaluator answers nothing until its
+     * current job ends, so recent results and work in flight count as alive; a probe is only
+     * sent when the queue is otherwise idle.
+     */
     async alive(): Promise<boolean> {
-        if (this.lastAlive && Date.now() - this.lastAlive.at < 30_000) return this.lastAlive.ok;
-        const probe = async (id: number | string) =>
+        if (Date.now() - this.lastResultAt < 60_000) return true;
+        if (this.inFlight > 0) return true;
+        return (this.probing ??= this.probe().finally(() => {
+            this.probing = undefined;
+        }));
+    }
+
+    private async probe(): Promise<boolean> {
+        const ask = async (id: number | string) =>
             (await this.send(
                 id,
                 {
@@ -128,10 +142,9 @@ export class EvaluatorRunner implements Runner {
         const configured = this.config.runner.idFormat;
         const number = randomInt(1, 2 ** 48 - 1);
         const answers = await Promise.all(
-            configured === "auto" ? [probe(number), probe(String(number + 1))] : [probe(configured === "string" ? String(number) : number)],
+            configured === "auto" ? [ask(number), ask(String(number + 1))] : [ask(configured === "string" ? String(number) : number)],
         );
-        this.lastAlive = { ok: answers.some(Boolean), at: Date.now() };
-        return this.lastAlive.ok;
+        return answers.some(Boolean);
     }
 
     /**
@@ -290,7 +303,11 @@ export class EvaluatorRunner implements Runner {
 
         const merged: RunResult = { runs: [] };
         for (const chunk of chunks) {
-            const result = await this.evaluate(request, chunk);
+            if (request.signal?.aborted) throw new Error("The build was cancelled");
+            this.inFlight += 1;
+            const result = await this.evaluate(request, chunk).finally(() => {
+                this.inFlight -= 1;
+            });
             if (result.compileError !== undefined) return result;
             merged.runs.push(...result.runs);
         }
