@@ -1,0 +1,31 @@
+name: guess
+title: "Guess the Number"
+type: interactive
+limits: { time_ms: 1000, memory_mb: 256 }
+scoring: { mode: binary }
+
+constraints:
+  N: { min: 1, max: 1000000 }
+  Q: { max: 20 }
+
+validator: validator.py
+# For interactive tasks the checker is the interactor.
+checker: interactor.py
+
+groups:
+  - name: samples
+    sample: true
+    tests:
+      - manual: tests/sample1.in
+  - name: secret
+    depends: [samples]
+    tests:
+      - manual: tests/one.in
+      - manual: tests/max.in
+      - manual: tests/mid.in
+
+solutions:
+  - { path: solutions/binary.py, role: main }
+  # After the interactor gives up, the current evaluator leaves the solution waiting for
+  # input until the wall clock runs out, so a wrong interaction can also surface as TLE.
+  - { path: solutions/linear.py, expect: { samples: AC, secret: "WA|TLE" } }

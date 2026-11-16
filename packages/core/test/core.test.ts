@@ -174,6 +174,17 @@ describe("report", () => {
         expect(codes).toContain("limits.thin-margin");
     });
 
+    it("ignores wall-clock timeouts when measuring how slow the slow solutions are", () => {
+        const matrix: Matrix = {
+            "main.cpp": { "small/1": result("AC"), "small/2": result("AC"), "full/1": result("AC", 400) },
+            // blocked on input: killed after the wall-clock limit with 17 ms of CPU time
+            "slow.py": { "small/1": result("AC"), "small/2": result("AC"), "full/1": result("TLE", 17) },
+        };
+        const report = buildReport(built, matrix);
+        expect(report.calibration.fastestRejectedMs).toBeUndefined();
+        expect(report.issues.map((issue) => issue.code)).not.toContain("limits.thin-margin");
+    });
+
     it("supports ICPC style binary scoring", () => {
         const binary = plan(BASE.replace("name: demo", "name: demo\nscoring: { mode: binary }"), FILES).plan;
         const matrix: Matrix = { "main.cpp": { "small/1": result("AC"), "small/2": result("AC"), "full/1": result("AC") } };

@@ -1,0 +1,41 @@
+# Infrastructure for running Forge on its own. When the kontestis development stack is already
+# running on this machine, skip this file and point .env at its Postgres, Redis and MinIO.
+
+services:
+  postgres:
+    image: "postgres:16-alpine"
+    ports: ["5433:5432"]
+    environment:
+      - POSTGRES_DB=forge
+      - POSTGRES_USER=forge
+      - POSTGRES_PASSWORD=forge
+    volumes: ["postgres:/var/lib/postgresql/data"]
+
+  redis:
+    image: "redis:7-alpine"
+    ports: ["6380:6379"]
+
+  minio:
+    image: "minio/minio:RELEASE.2025-02-18T16-25-55Z"
+    ports: ["9002:9000", "9003:9001"]
+    command: server --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: root
+      MINIO_ROOT_PASSWORD: password
+    volumes: ["minio:/data"]
+
+  # The kontestis evaluator, built from the evaluator-v2 repository (see its README):
+  #   cargo build --release && docker build -t kontestis-evaluator-v2 .
+  evaluator:
+    image: "kontestis-evaluator-v2:latest"
+    privileged: true
+    environment:
+      - RUN_WITH_CGROUPS=true
+      - RUN_WITH_QUOTAS=false
+      - REDIS_URL=redis://redis:6379
+      - REDIS_QUEUE_KEY=forge_evaluator_queue
+    depends_on: [redis]
+
+volumes:
+  postgres:
+  minio:

@@ -129,7 +129,11 @@ export const buildReport = (plan: Plan, matrix: Matrix, upstream: Issue[] = []):
             if (expected !== undefined && expected.split("|").map((p) => p.trim()).includes("TLE") && meets) {
                 const slow = Math.max(
                     0,
-                    ...own.filter((result) => result.verdict === "TLE").map((result) => result.timeMs),
+                    // a run killed on wall-clock time (blocked on input, sleeping) reports little
+                    // CPU time and says nothing about how far from the limit the solution is
+                    ...own
+                        .filter((result) => result.verdict === "TLE" && result.timeMs > timeLimitMs)
+                        .map((result) => result.timeMs),
                 );
                 if (slow > 0 && (calibration.fastestRejectedMs === undefined || slow < calibration.fastestRejectedMs)) {
                     calibration.fastestRejectedMs = slow;
