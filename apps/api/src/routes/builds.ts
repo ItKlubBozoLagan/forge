@@ -1,10 +1,10 @@
 import { LANGUAGES, MANIFEST_PATH, Plan, renderStatement, Sample } from "@forge/core";
 import { FastifyInstance } from "fastify";
-import { zipSync } from "fflate";
 import { isMap, isSeq, parseDocument } from "yaml";
 import { z } from "zod";
 
 import { App } from "../app";
+import { zipFiles } from "../zip";
 import { Tree } from "../blobs";
 import { BuildOutput, Engine } from "../engine/engine";
 import { StressOutput } from "../engine/stress";
@@ -151,7 +151,7 @@ export const buildRoutes = (server: FastifyInstance, app: App) => {
         return reply
             .header("content-type", "application/zip")
             .header("content-disposition", `attachment; filename="${problem.name}-tests-build${build.id}.zip"`)
-            .send(Buffer.from(zipSync(files, { level: 6 })));
+            .send(await zipFiles(files));
     });
 
     /** Timing samples behind a build's runs, grouped by the hardware they were measured on. */

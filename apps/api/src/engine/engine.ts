@@ -215,9 +215,11 @@ export class Engine {
             const key = keyOfInput(input.inputHash);
             if (!known.has(key)) missing.set(key, input.inputHash);
         }
-        if (missing.size > 0) {
+        // a slice of the tests at a time, so a large set is never in memory at once
+        const pending = [...missing];
+        for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
             const runInputs = [];
-            for (const [key, hash] of missing)
+            for (const [key, hash] of pending.slice(offset, offset + RUN_SLICE))
                 runInputs.push({ id: key, stdin: await this.ctx.blobs.text(this.ctx.workspaceId, hash) });
             const result = await this.exec({
                 program: { source, language: validator.language },
@@ -228,6 +230,7 @@ export class Engine {
             });
             const fresh: Array<Stored<{ message: string | null }>> = [];
             if (result.compileError !== undefined) {
+                offset = pending.length;
                 for (const key of missing.keys())
                     fresh.push({ key, value: { message: `the validator does not compile:\n${result.compileError}` } });
             } else {
@@ -265,9 +268,11 @@ export class Engine {
             const key = keyOfInput(input.inputHash);
             if (!known.has(key)) missing.set(key, input.inputHash);
         }
-        if (missing.size > 0) {
+        // a slice of the tests at a time, so a large set is never in memory at once
+        const pending = [...missing];
+        for (let offset = 0; offset < pending.length; offset += RUN_SLICE) {
             const runInputs = [];
-            for (const [key, hash] of missing)
+            for (const [key, hash] of pending.slice(offset, offset + RUN_SLICE))
                 runInputs.push({ id: key, stdin: await this.ctx.blobs.text(this.ctx.workspaceId, hash) });
             const result = await this.exec({
                 program: main,
@@ -278,6 +283,7 @@ export class Engine {
             });
             const fresh: Array<Stored<Answer>> = [];
             if (result.compileError !== undefined) {
+                offset = pending.length;
                 for (const key of missing.keys())
                     fresh.push({ key, value: { error: `the main solution does not compile:\n${result.compileError}` } });
             } else {

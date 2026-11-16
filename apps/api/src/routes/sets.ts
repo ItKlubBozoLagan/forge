@@ -1,9 +1,10 @@
 import { renderStatement, withPrelude } from "@forge/core";
 import { FastifyInstance } from "fastify";
-import { strToU8, zipSync } from "fflate";
+import { strToU8 } from "fflate";
 import { z } from "zod";
 
 import { App } from "../app";
+import { zipFiles } from "../zip";
 import { Tree } from "../blobs";
 import { BuildOutput, Engine } from "../engine/engine";
 import { audit, badRequest, conflict, currentUser, forbidden, notFound, requireProblem, requireWorkspace } from "../http";
@@ -197,7 +198,7 @@ export const setRoutes = (server: FastifyInstance, app: App) => {
         }
         files["bundle.json"] = strToU8(JSON.stringify({ format: "forge-bundle/1", name: set.name, problems }, null, 2));
         await audit(app, { workspaceId: set.workspace_id, userId: user.id, action: "set.export", detail: { set: set.id, problems } });
-        const archive = Buffer.from(zipSync(files, { level: 6 }));
+        const archive = await zipFiles(files);
         return reply
             .header("content-type", "application/zip")
             .header("content-disposition", `attachment; filename="${set.name.replace(/[^A-Za-z0-9._-]+/g, "-")}.zip"`)

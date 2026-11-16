@@ -1,9 +1,10 @@
 import { TEMPLATE_FORMATS, templateFiles } from "@forge/core";
 import { FastifyInstance, FastifyReply } from "fastify";
-import { unzipSync, zipSync } from "fflate";
+import { unzipSync } from "fflate";
 import { z } from "zod";
 
 import { App } from "../app";
+import { zipFiles } from "../zip";
 import { importPolygon } from "../polygon";
 import { Tree } from "../blobs";
 import { audit, badRequest, can, conflict, currentUser, notFound, ProblemRow, requireProblem, requireWorkspace } from "../http";
@@ -287,7 +288,7 @@ export const problemRoutes = (server: FastifyInstance, app: App) => {
         return reply
             .header("content-type", "application/zip")
             .header("content-disposition", `attachment; filename="${problem.name}${suffix}.zip"`)
-            .send(Buffer.from(zipSync(files, { level: 6 })));
+            .send(await zipFiles(files));
     });
 
     server.get("/problems/:id/blobs/:hash", async (req, reply) => {
