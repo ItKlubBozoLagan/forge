@@ -16,8 +16,17 @@ export const loadConfig = () => {
         webUrl: env("WEB_URL", "http://localhost:3200"),
         /** Public URL of this API as the browser sees it (behind the web app's /api proxy). */
         publicApiUrl: env("PUBLIC_API_URL", "http://localhost:3200/api"),
+        /**
+         * Directory of the built web app. When set, this process also serves it, so one
+         * container is the whole application.
+         */
+        webDist: process.env.WEB_DIST || undefined,
         databaseUrl: env("DATABASE_URL", "postgresql://kontestis:kontestis@localhost:5432/forge"),
+        /** PEM file of the CA that signed the database server's certificate; verifies it fully. */
+        databaseCaFile: process.env.DATABASE_CA_FILE || undefined,
         redisUrl: env("REDIS_URL", "redis://localhost:6379"),
+        /** PEM file of the CA that signed the Redis server's certificate (`rediss://` URLs). */
+        redisCaFile: process.env.REDIS_CA_FILE || undefined,
         s3: {
             endPoint: env("S3_ENDPOINT", "localhost"),
             port: int("S3_PORT", 9000),

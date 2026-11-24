@@ -1,4 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { createClient } from "redis";
 
@@ -63,7 +64,10 @@ export class EvaluatorRunner implements Runner {
             binaryInput: config.runner.features.includes("binary-input"),
             communication: config.runner.features.includes("communication"),
         };
-        this.client = createClient({ url: config.redisUrl });
+        this.client = createClient({
+            url: config.redisUrl,
+            ...(config.redisCaFile ? { socket: { tls: true as const, ca: readFileSync(config.redisCaFile, "utf8") } } : {}),
+        });
         this.listener = this.client.duplicate();
     }
 

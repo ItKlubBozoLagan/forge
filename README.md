@@ -81,6 +81,33 @@ Register Forge as an OAuth client in kontestis (`OAUTH_PROVIDER_CLIENTS`, kontes
 with the redirect URI `<PUBLIC_API_URL>/auth/callback`, then set `OAUTH_CLIENT_ID`,
 `OAUTH_CLIENT_SECRET`, `OAUTH_AUTHORIZE_URL`, `OAUTH_TOKEN_URL` and `OAUTH_USERINFO_URL`.
 
+## Deployment
+
+`Dockerfile` builds one image for the whole application: the API process also serves the built
+web app (`WEB_DIST`), so a single container behind a TLS-terminating proxy is enough. It runs
+as UID 1000 on a read-only root filesystem and needs a writable `/tmp`.
+
+```sh
+docker build -t forge .
+```
+
+The image sets `NODE_ENV=production`, `HOST=0.0.0.0` and `PORT=8080`. Give it:
+
+| Variable | |
+|---|---|
+| `WEB_URL`, `PUBLIC_API_URL` | Public URL of the site and of its API, e.g. `https://forge.example` and `https://forge.example/api` |
+| `DATABASE_URL`, `DATABASE_CA_FILE` | PostgreSQL. With a CA file the server certificate is verified against it |
+| `REDIS_URL`, `REDIS_CA_FILE` | The Redis the evaluator instances consume from. A CA file for `rediss://` servers with a private CA |
+| `S3_ENDPOINT`, `S3_PORT`, `S3_SSL`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET` | Blob storage. The bucket is created at start if it does not exist |
+| `EVALUATOR_QUEUE_KEY`, `RUNNER_POOL`, `RUNNER_HARDWARE_CLASS`, `RUNNER_CONCURRENCY`, `RUNNER_WORKSPACE_CONCURRENCY` | Which evaluator queue to use and how many jobs to keep on it at once |
+| `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_AUTHORIZE_URL`, `OAUTH_TOKEN_URL`, `OAUTH_USERINFO_URL` | Sign in with kontestis (below) |
+
+Schema migrations run at start. Run exactly one instance: builds are executed by the API
+process itself, so a second process against the same database is not supported.
+
+`.github/workflows/deploy.yml` builds the image on every push to `main` and releases it to the
+kontestis cluster by digest; the manifests live in the cluster repository.
+
 ## CLI
 
 ```sh
@@ -150,4 +177,3 @@ Not done, and why:
   are no per-author branches. Review comments keep their line number when the file changes.
 - **One API process.** Builds are run by the API process itself; on start it re-queues builds
   that were running, so a second API process against the same database is not supported.
-- **Deployment.** No production deployment configuration.

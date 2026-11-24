@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -5,8 +6,9 @@ import postgres from "postgres";
 
 export type Sql = postgres.Sql;
 
-export const connect = (url: string): Sql =>
-    postgres(url, { max: 10, onnotice: () => {} });
+/** With a CA file the server certificate and host name are verified, whatever the URL says. */
+export const connect = (url: string, caFile?: string): Sql =>
+    postgres(url, { max: 10, onnotice: () => {}, ...(caFile ? { ssl: { ca: readFileSync(caFile, "utf8") } } : {}) });
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations", import.meta.url));
 

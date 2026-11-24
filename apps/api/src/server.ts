@@ -1,4 +1,5 @@
 import cookie from "@fastify/cookie";
+import fastifyStatic from "@fastify/static";
 import Fastify from "fastify";
 
 import { App } from "./app";
@@ -11,8 +12,11 @@ import { reviewRoutes } from "./routes/review";
 import { setRoutes } from "./routes/sets";
 import { workspaceRoutes } from "./routes/workspaces";
 
+/** Production logs every request; tests log nothing. */
+const LOG_LEVEL: Record<string, string | undefined> = { development: "warn", production: "info" };
+
 export const createServer = async (app: App) => {
-    const server = Fastify({ bodyLimit: app.config.maxFileBytes + 1024, logger: app.config.mode === "development" ? { level: "warn" } : false });
+    const server = Fastify({ bodyLimit: app.config.maxFileBytes + 1024, logger: LOG_LEVEL[app.config.mode] ? { level: LOG_LEVEL[app.config.mode]! } : false });
     await server.register(cookie);
     // file contents are opaque bytes
     server.addContentTypeParser("application/octet-stream", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
@@ -55,5 +59,26 @@ export const createServer = async (app: App) => {
         },
         { prefix: "/api" },
     );
+
+    const webDist = app.config.webDist;
+    if (webDist) {
+        await server.register(fastifyStatic, {
+            root: webDist,
+            wildcard: false,
+            // the headers below replace the plugin's own
+            cacheControl: false,
+            // built assets carry a content hash in their name; the entry page must be revalidated
+            setHeaders: (res, path) => {
+                res.setHeader("cache-control", path.includes("/assets/") ? "public, max-age=31536000, immutable" : "no-cache");
+            },
+        });
+        // client-side routes: anything that is not the API or a file gets the entry page
+        server.setNotFoundHandler((req, reply) => {
+            const path = req.url.split("?")[0]!;
+            if (req.method !== "GET" || path === "/api" || path.startsWith("/api/") || path.startsWith("/assets/"))
+                return reply.status(404).send({ error: { code: "not_found", message: "Not found" } });
+            return reply.header("cache-control", "no-cache").sendFile("index.html");
+        });
+    }
     return server;
 };

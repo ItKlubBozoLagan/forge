@@ -18,7 +18,7 @@ export type App = {
 };
 
 export const createApp = async (config: Config, runnerOverride?: Runner): Promise<App> => {
-    const sql = connect(config.databaseUrl);
+    const sql = connect(config.databaseUrl, config.databaseCaFile);
     await migrate(sql);
     const blobs = new BlobStore(config.s3, sql);
     await blobs.init();
