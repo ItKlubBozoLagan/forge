@@ -37,7 +37,8 @@ export const createServer = async (app: App) => {
             // `?runner=1` also asks the runner whether it is answering, which takes up to a few seconds
             // `?runner=1` also asks whether the runner is answering; it can put a probe on the
             // runner's queue, so it needs a signed-in user
-            api.get("/health", async (req) => {
+            // probed every few seconds in production, so its requests are not logged
+            api.get("/health", { logLevel: "warn" }, async (req) => {
                 const probe = Boolean((req.query as { runner?: string }).runner);
                 if (probe) await currentUser(app, req);
                 return {
