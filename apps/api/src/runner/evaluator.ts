@@ -54,6 +54,7 @@ export class EvaluatorRunner implements Runner {
     private closed = false;
     private lastResultAt = 0;
     private inFlight = 0;
+    private waiting: Array<() => void> = [];
     private probing?: Promise<boolean>;
     private idFormat?: Promise<"number" | "string">;
 
@@ -365,17 +366,42 @@ export class EvaluatorRunner implements Runner {
         }
         if (current.length > 0) chunks.push(current);
 
-        const merged: RunResult = { runs: [] };
-        for (const chunk of chunks) {
-            if (request.signal?.aborted) throw new Error("The build was cancelled");
-            this.inFlight += 1;
-            const result = await this.evaluate(request, chunk).finally(() => {
-                this.inFlight -= 1;
+        // An evaluator runs the tests of one message one after another but several messages at
+        // once, so the chunks of a run go out together. The first one goes alone: if the program
+        // does not compile, the others would only repeat that.
+        const one = (chunk: RunInput[]) =>
+            this.slot(() => {
+                if (request.signal?.aborted) throw new Error("The build was cancelled");
+                return this.evaluate(request, chunk);
             });
+        const [head, ...rest] = chunks;
+        if (!head) return { runs: [] };
+        const first = await one(head);
+        if (first.compileError !== undefined) return first;
+        const others = await Promise.all(rest.map(one));
+        const merged: RunResult = { runs: [...first.runs] };
+        for (const result of others) {
             if (result.compileError !== undefined) return result;
             merged.runs.push(...result.runs);
         }
         return merged;
+    }
+
+    /**
+     * Caps the messages this process has on the evaluator's queue, whichever builds they belong
+     * to. The scheduler in front counts whole runs; this counts what the evaluator sees.
+     */
+    private async slot<T>(job: () => Promise<T>): Promise<T> {
+        if (this.inFlight >= this.config.runner.concurrency) await new Promise<void>((free) => this.waiting.push(free));
+        else this.inFlight += 1;
+        try {
+            return await job();
+        } finally {
+            // a waiting job inherits the slot, so the count never dips below what is running
+            const next = this.waiting.shift();
+            if (next) next();
+            else this.inFlight -= 1;
+        }
     }
 
     async close() {
